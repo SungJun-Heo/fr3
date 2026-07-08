@@ -30,10 +30,11 @@ import sys
 import numpy as np
 import mujoco
 
-# Reuse the existing scene-composition code so the sim robot is built the same
-# way ``view_scene.py`` builds it -- one source of truth for "what a task is".
+# Reuse the shared scene-composition code (the ``scene`` package) so the sim
+# robot is built exactly like the viewer -- one source of truth for "what a
+# task is".
 sys.path.insert(0, str(Path(__file__).parent.parent))
-from view_scene import build_task, initial_state
+from scene import build_task, initial_state
 
 # Arm joints in kinematic order. The end-effector reference frame is the flange
 # ``attachment_site``; note this is the flange, not yet the between-the-fingers

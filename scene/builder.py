@@ -1,20 +1,22 @@
-"""Load and view a task scene.
+"""Scene builder: compose a task into a compiled MuJoCo model.
 
-Usage:  python view_scene.py [task]     (default: "empty")
-
-A task = a base scene (robot + environment) + task-specific objects composed at
-runtime with MuJoCo's model-editing API (mjSpec). See tasks.py / objects.py.
+A task = a base scene (robot + environment) + task-specific objects, composed at
+runtime with MuJoCo's model-editing API (mjSpec). See ``tasks.py`` / ``objects.py``.
+This is the single source of truth for turning a task spec into something the
+viewer and the sim robot can both run.
 """
 
 import sys
-import mujoco
-import mujoco.viewer
 from pathlib import Path
 
-from tasks import TASKS, BASES
-from objects import add_object
+import mujoco
 
-ROOT = Path(__file__).parent
+from scene.tasks import TASKS, BASES
+from scene.objects import add_object
+
+# Base-scene paths in ``tasks.py`` are relative to the repo root. This file lives
+# in ``<repo>/scene/``, so the repo root is one directory up.
+REPO_ROOT = Path(__file__).resolve().parents[1]
 
 
 def build_task(task_name):
@@ -27,7 +29,7 @@ def build_task(task_name):
         sys.exit(f"unknown task '{task_name}'. choose from: {', '.join(TASKS)}")
 
     task = TASKS[task_name]
-    spec = mujoco.MjSpec.from_file(str(ROOT / BASES[task["base"]]))
+    spec = mujoco.MjSpec.from_file(str(REPO_ROOT / BASES[task["base"]]))
 
     object_names = []
     for obj in task["objects"]:
@@ -56,18 +58,3 @@ def initial_state(model, object_names):
 
     mujoco.mj_forward(model, data)
     return data
-
-
-def main():
-    task_name = sys.argv[1] if len(sys.argv) > 1 else "empty"
-    model, object_names = build_task(task_name)
-    data = initial_state(model, object_names)
-
-    with mujoco.viewer.launch_passive(model, data) as viewer:
-        while viewer.is_running():
-            mujoco.mj_step(model, data)
-            viewer.sync()
-
-
-if __name__ == "__main__":
-    main()
