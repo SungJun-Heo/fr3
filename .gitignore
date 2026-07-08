@@ -1,0 +1,15 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+env/
+
+# MuJoCo / rendering artifacts
+*.mp4
+*.png.tmp
+
+# OS / editor
+.DS_Store
+*.swp
