@@ -1,16 +1,19 @@
-"""Step 1 -- read-only state.
+"""Sim robot -- state reading + joint-position control primitives.
 
-``SimRobot`` loads a task scene and exposes the robot's current state in the
-same shape libfranka/pylibfranka does (see ``camel-franka``'s
-``print_robot_state.py`` and ``_store_leftarm_state``). No control yet: this
-step only proves we can pull MuJoCo state out in the real robot's vocabulary.
+``SimRobot`` loads a task scene and exposes the robot in the same shape
+libfranka/pylibfranka does (see ``camel-franka``'s ``print_robot_state.py`` and
+``_store_leftarm_state``). Alongside ``read_once()`` it provides an external
+control loop -- ``start_joint_position_control()`` returns an ``ActiveControl``
+driven by ``readOnce()``/``writeOnce()`` -- plus the real robot's safety
+lifecycle (``set_collision_behavior``, ``automatic_error_recovery``, ``stop``).
+The collision-reflex *check* is not wired yet (a later safety step); the
+error-state machinery it will flip is already in place.
 
 Field/convention parity with pylibfranka's ``RobotState``:
   * ``q, dq``           -- 7 arm-joint positions / velocities, in joint order.
-  * ``q_d``             -- controller's *desired* joint positions. In sim there
-                           is no separate desired yet, so we mirror ``q``; this
-                           becomes meaningful once control loops set targets
-                           (step 2).
+  * ``q_d``             -- controller's *desired* joint positions: the arm
+                           actuators' current command target (``data.ctrl``),
+                           i.e. what the position servos are tracking.
   * ``tau_J``           -- joint torques. We report the actuator-applied
                            generalized force, the closest sim analog to the
                            real arm's measured torque.
@@ -35,6 +38,7 @@ import mujoco
 # task is".
 sys.path.insert(0, str(Path(__file__).parent.parent))
 from scene import build_task, initial_state
+from robot.types import ControllerMode, Duration
 
 # Arm joints in kinematic order. The end-effector reference frame is the flange
 # ``attachment_site``; note this is the flange, not yet the between-the-fingers
@@ -68,7 +72,16 @@ class SimRobot:
         # Cache addresses once; a hinge joint occupies one qpos and one dof slot.
         self._qadr = np.array([self.model.joint(n).qposadr[0] for n in ARM_JOINTS])
         self._vadr = np.array([self.model.joint(n).dofadr[0] for n in ARM_JOINTS])
+        self._act_arm = np.array([self.model.actuator(n).id for n in ARM_JOINTS])
         self._ee_site = self.model.site(EE_SITE).id
+
+        # Safety lifecycle state (mirrors the real robot's reflex system).
+        # set_collision_behavior stores the thresholds; _has_error is the
+        # reflex/error latch a later safety step sets on over-force and
+        # automatic_error_recovery() clears; _active is the running loop.
+        self._collision_thresholds = None
+        self._has_error = False
+        self._active = None
 
     def read_once(self):
         """Return the current ``RobotState`` without advancing the sim."""
@@ -80,7 +93,7 @@ class SimRobot:
         return RobotState(
             q=q,
             dq=d.qvel[self._vadr].copy(),
-            q_d=q.copy(),
+            q_d=d.ctrl[self._act_arm].copy(),
             tau_J=d.qfrc_actuator[self._vadr].copy(),
             O_T_EE=O_T_EE,
             O_T_EE_d=O_T_EE.copy(),
@@ -95,3 +108,73 @@ class SimRobot:
         T[:3, :3] = d.site_xmat[self._ee_site].reshape(3, 3)
         T[:3, 3] = d.site_xpos[self._ee_site]
         return T.flatten(order="F")  # column-major: translation at [12,13,14]
+
+    # --- control loop --------------------------------------------------
+
+    def start_joint_position_control(self, mode=ControllerMode.JointImpedance):
+        """Begin an external joint-position control loop (mirrors libfranka's
+        ``Robot.start*Control``). Drive the returned ``ActiveControl`` with
+        ``readOnce()``/``writeOnce()``."""
+        self._active = ActiveControl(self, mode)
+        return self._active
+
+    # --- safety lifecycle (real robot parity) --------------------------
+
+    def set_collision_behavior(self, lower_torque_thresholds,
+                               upper_torque_thresholds,
+                               lower_force_thresholds,
+                               upper_force_thresholds):
+        """Store the contact/collision reflex thresholds (libfranka signature).
+
+        Real: exceeding ``lower_*`` reports contact, exceeding ``upper_*`` trips
+        a reflex and stops the robot. Here we only store them; the comparison is
+        wired up in a later safety step."""
+        self._collision_thresholds = dict(
+            lower_torque=np.asarray(lower_torque_thresholds, float),
+            upper_torque=np.asarray(upper_torque_thresholds, float),
+            lower_force=np.asarray(lower_force_thresholds, float),
+            upper_force=np.asarray(upper_force_thresholds, float),
+        )
+
+    def automatic_error_recovery(self):
+        """Clear a tripped reflex/error so control can resume (mirrors
+        libfranka; real acknowledges recoverable errors after a collision)."""
+        self._has_error = False
+
+    def stop(self):
+        """End the running control loop (mirrors libfranka's ``Robot.stop``)."""
+        if self._active is not None:
+            self._active._finished = True
+
+
+class ActiveControl:
+    """External control-loop handle, mirroring libfranka's ``ActiveControl``.
+
+    Real libfranka runs the arm at 1 kHz and ``readOnce()`` blocks until the
+    next tick, the robot advancing in real time. Sim has no real time, so the
+    step is explicit: ``writeOnce`` applies the command and advances the sim by
+    one control period. One readOnce/writeOnce pair == one sim step.
+    """
+
+    def __init__(self, robot, mode):
+        self._robot = robot
+        self.mode = mode          # ControllerMode -- stored for parity
+        self._finished = False
+
+    def readOnce(self):
+        """Return ``(RobotState, Duration)`` for the current tick; no stepping."""
+        state = self._robot.read_once()
+        dt = Duration(self._robot.model.opt.timestep)
+        return state, dt
+
+    def writeOnce(self, command):
+        """Apply a ``JointPositions`` command and advance the sim one step."""
+        if self._robot._has_error:
+            raise RuntimeError(
+                "robot in reflex/error state; call automatic_error_recovery()")
+        robot = self._robot
+        # Write the 7 arm targets; leave the gripper ctrl slot untouched.
+        robot.data.ctrl[robot._act_arm] = command.q
+        mujoco.mj_step(robot.model, robot.data)
+        if getattr(command, "motion_finished", False):
+            self._finished = True

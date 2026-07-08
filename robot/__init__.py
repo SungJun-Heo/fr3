@@ -8,6 +8,10 @@ method names, same ``RobotState`` field names, same conventions (e.g. ``O_T_EE``
 as a column-major 4x4), a different backend underneath.
 """
 
-from robot.sim_robot import SimRobot, RobotState
+from robot.sim_robot import SimRobot, RobotState, ActiveControl
+from robot.types import ControllerMode, JointPositions, Duration
 
-__all__ = ["SimRobot", "RobotState"]
+__all__ = [
+    "SimRobot", "RobotState", "ActiveControl",
+    "ControllerMode", "JointPositions", "Duration",
+]
