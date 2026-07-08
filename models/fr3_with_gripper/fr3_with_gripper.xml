@@ -225,7 +225,7 @@
                           <geom mesh="d435i_6" material="d435i_black"     class="d435i"/>
                           <geom mesh="d435i_7" material="d435i_rgb_pupil" class="d435i"/>
                           <geom mesh="d435i_8" material="d435i_metal"     class="d435i"/>
-                          <camera name="wrist" pos="0 0 0" xyaxes="-1 0 0 0 1 0" fovy="42"/>
+                          <camera name="wrist" pos="0 0 0" xyaxes="-1 0 0 0 0.6428 0.766" fovy="42"/>
                         </body>
                       </body>
                     </body>
