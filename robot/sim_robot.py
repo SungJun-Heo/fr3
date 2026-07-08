@@ -5,9 +5,11 @@ libfranka/pylibfranka does (see ``camel-franka``'s ``print_robot_state.py`` and
 ``_store_leftarm_state``). Alongside ``read_once()`` it provides an external
 control loop -- ``start_joint_position_control()`` returns an ``ActiveControl``
 driven by ``readOnce()``/``writeOnce()`` -- plus the real robot's safety
-lifecycle (``set_collision_behavior``, ``automatic_error_recovery``, ``stop``).
-The collision-reflex *check* is not wired yet (a later safety step); the
-error-state machinery it will flip is already in place.
+lifecycle (``set_collision_behavior``, ``automatic_error_recovery``, ``stop``)
+including a collision reflex: after each control step the external force is
+estimated from MuJoCo contacts, low-pass filtered, and compared to the
+thresholds; exceeding them latches ``_has_error`` (motion refused until
+``automatic_error_recovery``), mirroring the real robot tripping on impact.
 
 Field/convention parity with pylibfranka's ``RobotState``:
   * ``q, dq``           -- 7 arm-joint positions / velocities, in joint order.
@@ -21,9 +23,10 @@ Field/convention parity with pylibfranka's ``RobotState``:
                            to length 16, so translation lives at indices
                            12,13,14 -- exactly how camel-franka indexes it.
   * ``O_T_EE_d``        -- desired EE pose; mirrors ``O_T_EE`` for now.
-  * ``O_F_ext_hat_K``,  -- external wrench estimates. Zero for now (sim force
-    ``K_F_ext_hat_K``      estimation is a later step); kept so the recorder
-                           schema matches real from the start.
+  * ``tau_ext_hat_filtered`` -- filtered external joint torque, estimated from
+                           MuJoCo contact/constraint forces.
+  * ``O_F_ext_hat_K``,  -- filtered external EE wrench (base frame). K-frame
+    ``K_F_ext_hat_K``      copy is a skeleton stand-in (EE-frame rotation TODO).
 """
 
 from dataclasses import dataclass
@@ -55,6 +58,7 @@ class RobotState:
     dq: np.ndarray           # (7,) joint velocities
     q_d: np.ndarray          # (7,) desired joint positions
     tau_J: np.ndarray        # (7,) joint torques
+    tau_ext_hat_filtered: np.ndarray  # (7,) filtered external joint torque
     O_T_EE: np.ndarray       # (16,) column-major 4x4 EE pose in base frame
     O_T_EE_d: np.ndarray     # (16,) desired EE pose
     O_F_ext_hat_K: np.ndarray  # (6,) external wrench, base frame
@@ -81,7 +85,16 @@ class SimRobot:
         # automatic_error_recovery() clears; _active is the running loop.
         self._collision_thresholds = None
         self._has_error = False
+        self._error_reason = ""
         self._active = None
+
+        # External-force estimate (filled after each control step) and its
+        # low-pass state. Filtering mirrors the real robot's *_hat_filtered
+        # signals: a brief tap should not trip, a sustained push should.
+        self._hand_body = self.model.body("hand").id
+        self._ext_alpha = 0.1
+        self._tau_ext_filt = np.zeros(7)
+        self._O_F_ext_filt = np.zeros(6)
 
     def read_once(self):
         """Return the current ``RobotState`` without advancing the sim."""
@@ -95,10 +108,11 @@ class SimRobot:
             dq=d.qvel[self._vadr].copy(),
             q_d=d.ctrl[self._act_arm].copy(),
             tau_J=d.qfrc_actuator[self._vadr].copy(),
+            tau_ext_hat_filtered=self._tau_ext_filt.copy(),
             O_T_EE=O_T_EE,
             O_T_EE_d=O_T_EE.copy(),
-            O_F_ext_hat_K=np.zeros(6),
-            K_F_ext_hat_K=np.zeros(6),
+            O_F_ext_hat_K=self._O_F_ext_filt.copy(),
+            K_F_ext_hat_K=self._O_F_ext_filt.copy(),  # skeleton: EE-frame rot TODO
         )
 
     def _ee_pose(self):
@@ -140,6 +154,45 @@ class SimRobot:
         """Clear a tripped reflex/error so control can resume (mirrors
         libfranka; real acknowledges recoverable errors after a collision)."""
         self._has_error = False
+        self._error_reason = ""
+
+    # --- collision reflex ----------------------------------------------
+
+    def _update_external_estimate(self):
+        """Refresh the filtered external-force estimate from MuJoCo contacts.
+
+        Joint space uses the generalized constraint force (``qfrc_constraint``);
+        Cartesian uses the net external spatial force on the hand
+        (``cfrc_ext``), reordered from MuJoCo's [torque, force] to libfranka's
+        [force, torque]. Both are exponentially low-pass filtered."""
+        d = self.data
+        a = self._ext_alpha
+        tau_raw = d.qfrc_constraint[self._vadr]
+        c = d.cfrc_ext[self._hand_body]
+        wrench_raw = np.concatenate([c[3:6], c[0:3]])
+        self._tau_ext_filt += a * (tau_raw - self._tau_ext_filt)
+        self._O_F_ext_filt += a * (wrench_raw - self._O_F_ext_filt)
+
+    def _check_collision(self):
+        """Latch the reflex if a filtered estimate exceeds an upper threshold.
+
+        No thresholds set (``set_collision_behavior`` not called) -> no check,
+        so control code that skips setup still runs."""
+        th = self._collision_thresholds
+        if th is None or self._has_error:
+            return
+        tau = np.abs(self._tau_ext_filt)
+        force = np.abs(self._O_F_ext_filt)
+        if np.any(tau > th["upper_torque"]):
+            j = int(np.argmax(tau - th["upper_torque"]))
+            self._has_error = True
+            self._error_reason = (f"joint{j+1} ext torque {tau[j]:.1f} > "
+                                  f"{th['upper_torque'][j]:.1f} Nm")
+        elif np.any(force > th["upper_force"]):
+            i = int(np.argmax(force - th["upper_force"]))
+            self._has_error = True
+            self._error_reason = (f"EE wrench[{i}] {force[i]:.1f} > "
+                                  f"{th['upper_force'][i]:.1f}")
 
     def stop(self):
         """End the running control loop (mirrors libfranka's ``Robot.stop``)."""
@@ -176,5 +229,9 @@ class ActiveControl:
         # Write the 7 arm targets; leave the gripper ctrl slot untouched.
         robot.data.ctrl[robot._act_arm] = command.q
         mujoco.mj_step(robot.model, robot.data)
+        # After stepping, refresh the external-force estimate and trip the
+        # reflex if it exceeds the collision thresholds.
+        robot._update_external_estimate()
+        robot._check_collision()
         if getattr(command, "motion_finished", False):
             self._finished = True
