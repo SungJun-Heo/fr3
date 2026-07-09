@@ -41,7 +41,8 @@ import mujoco
 # task is".
 sys.path.insert(0, str(Path(__file__).parent.parent))
 from scene import build_task, initial_state
-from robot.types import ControllerMode, Duration
+from robot.types import ControllerMode, Duration, JointPositions, CartesianPose
+from controller.kinematics import DLSIKSolver
 
 # Arm joints in kinematic order. The end-effector reference frame is the flange
 # ``attachment_site``; note this is the flange, not yet the between-the-fingers
@@ -96,6 +97,15 @@ class SimRobot:
         self._tau_ext_filt = np.zeros(7)
         self._O_F_ext_filt = np.zeros(6)
 
+        # IK backend for Cartesian pose commands, plus the joint-limit and
+        # singularity guards its output is checked against (fidelity: trip when
+        # the real robot would fault, rather than silently doing something bad).
+        self._ik = DLSIKSolver(self.model, EE_SITE, ARM_JOINTS, damping=0.05)
+        jids = [self.model.joint(n).id for n in ARM_JOINTS]
+        self._q_min = self.model.jnt_range[jids, 0].copy()
+        self._q_max = self.model.jnt_range[jids, 1].copy()
+        self._manip_min = 0.02  # Yoshikawa manipulability floor (near-singularity)
+
     def read_once(self):
         """Return the current ``RobotState`` without advancing the sim."""
         # Recompute kinematics so site poses reflect the current qpos.
@@ -129,6 +139,16 @@ class SimRobot:
         """Begin an external joint-position control loop (mirrors libfranka's
         ``Robot.start*Control``). Drive the returned ``ActiveControl`` with
         ``readOnce()``/``writeOnce()``."""
+        self._active = ActiveControl(self, mode)
+        return self._active
+
+    def start_cartesian_pose_control(self, mode=ControllerMode.CartesianImpedance):
+        """Begin an external Cartesian-pose control loop. Stream ``CartesianPose``
+        commands via ``writeOnce``; each is tracked with one DLS IK step.
+
+        On the real robot the firmware does this conversion; here the sim does
+        it, so the same streaming code (VLA, teleop, a scripted path) runs on
+        both."""
         self._active = ActiveControl(self, mode)
         return self._active
 
@@ -194,6 +214,41 @@ class SimRobot:
             self._error_reason = (f"EE wrench[{i}] {force[i]:.1f} > "
                                   f"{th['upper_force'][i]:.1f}")
 
+    # --- cartesian control (IK backend + safety) -----------------------
+
+    def _cartesian_to_ctrl(self, command):
+        """Turn a ``CartesianPose`` into an arm ctrl target via one DLS IK step.
+
+        Safety (fidelity: trip like the real robot instead of silently doing
+        something unsafe): if the step would produce NaN, drive near a
+        singularity, or exceed a joint limit, latch ``_has_error`` and raise."""
+        T = np.asarray(command.O_T_EE, dtype=float).reshape(4, 4, order="F")
+        dq, info = self._ik.velocity_step(self.data, T[:3, 3], T[:3, :3])
+        q_target = self.data.qpos[self._qadr] + dq
+        self._check_ik_safety(q_target, info)
+        if self._has_error:
+            raise RuntimeError(f"IK safety trip: {self._error_reason}")
+        return np.clip(q_target, self._q_min, self._q_max)
+
+    def _check_ik_safety(self, q_target, info):
+        """Latch ``_has_error`` if a Cartesian-tracking step is unsafe."""
+        if not np.all(np.isfinite(q_target)):
+            self._has_error = True
+            self._error_reason = "IK produced NaN/inf"
+            return
+        if info["manipulability"] < self._manip_min:
+            self._has_error = True
+            self._error_reason = (f"near singularity "
+                                  f"(w={info['manipulability']:.4f} < {self._manip_min})")
+            return
+        below = self._q_min - q_target
+        above = q_target - self._q_max
+        if np.any(below > 0) or np.any(above > 0):
+            j = int(np.argmax(np.maximum(below, above)))
+            self._has_error = True
+            self._error_reason = (f"joint{j+1} would exceed limit "
+                                  f"({np.degrees(q_target[j]):.1f} deg)")
+
     def stop(self):
         """End the running control loop (mirrors libfranka's ``Robot.stop``)."""
         if self._active is not None:
@@ -221,13 +276,23 @@ class ActiveControl:
         return state, dt
 
     def writeOnce(self, command):
-        """Apply a ``JointPositions`` command and advance the sim one step."""
-        if self._robot._has_error:
+        """Apply a command and advance the sim one step.
+
+        ``JointPositions`` writes the targets straight to the actuators;
+        ``CartesianPose`` is first converted to a joint target by one DLS IK
+        step (with joint-limit/singularity safety). One writeOnce == one step."""
+        robot = self._robot
+        if robot._has_error:
             raise RuntimeError(
                 "robot in reflex/error state; call automatic_error_recovery()")
-        robot = self._robot
+        if isinstance(command, JointPositions):
+            q_target = np.asarray(command.q, dtype=float)
+        elif isinstance(command, CartesianPose):
+            q_target = robot._cartesian_to_ctrl(command)  # IK + safety; may raise
+        else:
+            raise TypeError(f"unsupported command: {type(command).__name__}")
         # Write the 7 arm targets; leave the gripper ctrl slot untouched.
-        robot.data.ctrl[robot._act_arm] = command.q
+        robot.data.ctrl[robot._act_arm] = q_target
         mujoco.mj_step(robot.model, robot.data)
         # After stepping, refresh the external-force estimate and trip the
         # reflex if it exceeds the collision thresholds.

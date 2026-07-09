@@ -44,3 +44,15 @@ class JointPositions:
     def __init__(self, q):
         self.q = np.asarray(q, dtype=float)
         self.motion_finished = False
+
+
+class CartesianPose:
+    """A Cartesian-pose command: the 4x4 EE pose as a **column-major** length-16
+    vector (libfranka's ``O_T_EE``) + a finish flag. Mirrors
+    ``franka::CartesianPose``. On the real robot the firmware tracks this; in
+    sim it is tracked by one DLS IK step per tick (see ``SimRobot``).
+    """
+
+    def __init__(self, O_T_EE):
+        self.O_T_EE = np.asarray(O_T_EE, dtype=float)
+        self.motion_finished = False

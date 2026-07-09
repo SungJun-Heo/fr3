@@ -39,12 +39,12 @@ class DLSIKSolver:
         mujoco.mj_kinematics(self.model, self.data)
         mujoco.mj_comPos(self.model, self.data)   # needed for site Jacobian
 
-    def _pose_error(self, target_pos, target_mat):
-        """6D error [Δposition(3), Δrotation(3)] from current scratch pose."""
-        err_pos = np.asarray(target_pos) - self.data.site_xpos[self.site]
+    def _pose_error(self, data, target_pos, target_mat):
+        """6D error [Δposition(3), Δrotation(3)] from the pose in ``data``."""
+        err_pos = np.asarray(target_pos) - data.site_xpos[self.site]
         # orientation error: rotation that takes current -> target, as a rotvec
         quat_cur = np.zeros(4)
-        mujoco.mju_mat2Quat(quat_cur, self.data.site_xmat[self.site])
+        mujoco.mju_mat2Quat(quat_cur, data.site_xmat[self.site])
         quat_tgt = np.zeros(4)
         mujoco.mju_mat2Quat(quat_tgt, np.asarray(target_mat, float).flatten())
         quat_cur_inv = np.zeros(4)
@@ -55,12 +55,28 @@ class DLSIKSolver:
         mujoco.mju_quat2Vel(err_rot, err_quat, 1.0)     # quaternion -> rotvec
         return np.concatenate([err_pos, err_rot])
 
-    def _jacobian(self):
-        """6×n end-effector Jacobian (arm columns only) at the current scratch."""
+    def _jacobian(self, data):
+        """6×n end-effector Jacobian (arm columns only) from ``data``."""
         jacp = np.zeros((3, self.model.nv))
         jacr = np.zeros((3, self.model.nv))
-        mujoco.mj_jacSite(self.model, self.data, jacp, jacr, self.site)
+        mujoco.mj_jacSite(self.model, data, jacp, jacr, self.site)
         return np.vstack([jacp[:, self.dofs], jacr[:, self.dofs]])
+
+    def velocity_step(self, data, target_pos, target_mat):
+        """One DLS step toward the target using the pose already in ``data``.
+
+        The caller must have current kinematics for ``data`` (true right after
+        ``mj_step``/``mj_forward``), so this does no FK -- it is the per-tick
+        streaming path. Returns ``(dq, info)`` with info =
+        ``{pos_err, rot_err, manipulability}``."""
+        err = self._pose_error(data, target_pos, target_mat)
+        J = self._jacobian(data)
+        dq = self.dls_step(err, J)
+        w = float(np.sqrt(max(np.linalg.det(J @ J.T), 0.0)))  # Yoshikawa manip.
+        info = dict(pos_err=float(np.linalg.norm(err[:3])),
+                    rot_err=float(np.linalg.norm(err[3:])),
+                    manipulability=w)
+        return dq, info
 
     def dls_step(self, err, J):
         """The DLS increment: dq = Jᵀ (JJᵀ + λ²I)⁻¹ e (with a |dq| clamp)."""
@@ -81,12 +97,12 @@ class DLSIKSolver:
         q = np.array(q_init, dtype=float)
         for i in range(max_iters):
             self._fk(q)
-            err = self._pose_error(target_pos, target_mat)
+            err = self._pose_error(self.data, target_pos, target_mat)
             pos_err = np.linalg.norm(err[:3])
             rot_err = np.linalg.norm(err[3:])
             if pos_err < pos_tol and rot_err < rot_tol:
                 return q, dict(iters=i, pos_err=pos_err, rot_err=rot_err,
                                converged=True)
-            q = q + self.dls_step(err, self._jacobian())
+            q = q + self.dls_step(err, self._jacobian(self.data))
         return q, dict(iters=max_iters, pos_err=pos_err, rot_err=rot_err,
                        converged=False)

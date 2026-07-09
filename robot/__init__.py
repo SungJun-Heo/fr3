@@ -9,9 +9,9 @@ as a column-major 4x4), a different backend underneath.
 """
 
 from robot.sim_robot import SimRobot, RobotState, ActiveControl
-from robot.types import ControllerMode, JointPositions, Duration
+from robot.types import ControllerMode, JointPositions, CartesianPose, Duration
 
 __all__ = [
     "SimRobot", "RobotState", "ActiveControl",
-    "ControllerMode", "JointPositions", "Duration",
+    "ControllerMode", "JointPositions", "CartesianPose", "Duration",
 ]
