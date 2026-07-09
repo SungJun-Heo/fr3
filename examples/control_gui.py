@@ -22,7 +22,7 @@ import mujoco
 import mujoco.viewer
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
-from robot import SimRobot, JointPositions, CartesianPose
+from robot import SimRobot, JointPositions, CartesianPose, Gripper
 from robot.sim_robot import ARM_JOINTS
 from controller.planning import QuinticTrajectoryGenerator
 
@@ -63,7 +63,9 @@ class ControlGUI:
         self.substeps = max(1, round(TICK_MS / 1000 / self.model.opt.timestep))
         self.mode = "joint"
         self.ac = self.robot.start_joint_position_control()
+        self.gripper = Gripper(self.robot)
         self.trip = None
+        self._editing = False    # True while the user is typing into entries
         self._home_traj = None   # active quintic while a HOME motion runs
         self._home_t = 0.0
         self._build_ui()
@@ -82,30 +84,57 @@ class ControlGUI:
                        command=self._on_mode).pack(side=tk.LEFT)
         tk.Radiobutton(top, text="Task", variable=self.mode_var, value="task",
                        command=self._on_mode).pack(side=tk.LEFT)
+        tk.Button(top, text="Execute", command=self._execute).pack(side=tk.LEFT, padx=4)
         tk.Button(top, text="HOME", command=self._go_home).pack(side=tk.LEFT, padx=4)
         tk.Button(top, text="Recover", command=self._recover).pack(side=tk.LEFT)
 
-        # joint sliders
-        self.joint_frame = tk.LabelFrame(self.root, text="Joint targets (rad)")
+        # joint: slider + numeric entry per DOF (degrees)
+        self.joint_frame = tk.LabelFrame(self.root, text="Joint targets (deg)")
         self.joint_sliders = []
+        self.joint_entries = []
         for i in range(7):
-            s = tk.Scale(self.joint_frame, from_=float(self.robot._q_min[i]),
-                         to=float(self.robot._q_max[i]), resolution=0.01,
-                         orient=tk.HORIZONTAL, length=320, label=f"joint{i + 1}")
-            s.pack(padx=6)
+            row = tk.Frame(self.joint_frame)
+            row.pack(fill=tk.X, padx=6)
+            s = tk.Scale(row, from_=float(np.degrees(self.robot._q_min[i])),
+                         to=float(np.degrees(self.robot._q_max[i])), resolution=0.5,
+                         orient=tk.HORIZONTAL, length=240, label=f"joint{i + 1}")
+            s.pack(side=tk.LEFT)
+            e = tk.Entry(row, width=8)
+            e.pack(side=tk.LEFT, padx=4)
+            e.bind("<Return>", lambda ev: self._execute())
+            e.bind("<FocusIn>", lambda ev: setattr(self, "_editing", True))
+            e.bind("<Escape>", lambda ev: self._cancel_edit())
             self.joint_sliders.append(s)
+            self.joint_entries.append(e)
 
-        # task sliders
-        self.task_frame = tk.LabelFrame(self.root, text="EE pose")
+        # task: slider + numeric entry per DOF (x/y/z in cm, roll/pitch/yaw in deg)
+        self.task_frame = tk.LabelFrame(self.root, text="EE pose (cm / deg)")
         self.task_sliders = {}
-        specs = [("x", 0.1, 0.9, 0.005), ("y", -0.5, 0.5, 0.005),
-                 ("z", 0.0, 1.0, 0.005), ("roll", -math.pi, math.pi, 0.02),
-                 ("pitch", -math.pi, math.pi, 0.02), ("yaw", -math.pi, math.pi, 0.02)]
+        self.task_entries = {}
+        specs = [("x", 10, 90, 0.5), ("y", -50, 50, 0.5), ("z", 0, 100, 0.5),
+                 ("roll", -180, 180, 1), ("pitch", -180, 180, 1), ("yaw", -180, 180, 1)]
         for name, lo, hi, res in specs:
-            s = tk.Scale(self.task_frame, from_=lo, to=hi, resolution=res,
-                         orient=tk.HORIZONTAL, length=320, label=name)
-            s.pack(padx=6)
+            row = tk.Frame(self.task_frame)
+            row.pack(fill=tk.X, padx=6)
+            s = tk.Scale(row, from_=lo, to=hi, resolution=res,
+                         orient=tk.HORIZONTAL, length=240, label=name)
+            s.pack(side=tk.LEFT)
+            e = tk.Entry(row, width=8)
+            e.pack(side=tk.LEFT, padx=4)
+            e.bind("<Return>", lambda ev: self._execute())
+            e.bind("<FocusIn>", lambda ev: setattr(self, "_editing", True))
+            e.bind("<Escape>", lambda ev: self._cancel_edit())
             self.task_sliders[name] = s
+            self.task_entries[name] = e
+
+        # gripper slider: always visible (works in either mode). Driven
+        # non-blocking each tick, so it tracks alongside arm control.
+        self.gripper_frame = tk.LabelFrame(self.root, text="Gripper")
+        self.gripper_slider = tk.Scale(self.gripper_frame, from_=0.0, to=1.0,
+                                       resolution=0.02, orient=tk.HORIZONTAL,
+                                       length=320, label="open (0=closed, 1=open)")
+        self.gripper_slider.pack(padx=6)
+        self.gripper_frame.pack(fill=tk.X, padx=6)
 
         # wraplength caps the text width so a long SAFETY-TRIP message wraps to
         # another line instead of stretching the window horizontally.
@@ -117,20 +146,21 @@ class ControlGUI:
     def _show_frame(self):
         self.joint_frame.pack_forget()
         self.task_frame.pack_forget()
-        (self.joint_frame if self.mode == "joint" else self.task_frame).pack(
-            fill=tk.X, padx=6)
+        frame = self.joint_frame if self.mode == "joint" else self.task_frame
+        frame.pack(fill=tk.X, padx=6, before=self.gripper_frame)  # keep grip below
 
     def _sync_sliders_to_state(self):
         """Set every slider to the robot's current pose (so switching modes or
         recovering never causes a jump/re-trip)."""
         st = self.robot.read_once()
         for i in range(7):
-            self.joint_sliders[i].set(float(st.q[i]))
+            self.joint_sliders[i].set(float(np.degrees(st.q[i])))
         T = st.O_T_EE.reshape(4, 4, order="F")
         for name, v in zip(("x", "y", "z"), T[:3, 3]):
-            self.task_sliders[name].set(float(v))
+            self.task_sliders[name].set(float(v) * 100.0)
         for name, v in zip(("roll", "pitch", "yaw"), mat_to_euler(T[:3, :3])):
-            self.task_sliders[name].set(float(v))
+            self.task_sliders[name].set(float(np.degrees(v)))
+        self.gripper_slider.set(self.gripper.width() / self.gripper.max_width)  # m -> 0..1
 
     # -- buttons -------------------------------------------------------
 
@@ -140,6 +170,25 @@ class ControlGUI:
         self.ac = (self.robot.start_joint_position_control() if self.mode == "joint"
                    else self.robot.start_cartesian_pose_control())
         self._show_frame()
+
+    def _execute(self):
+        """Apply ALL typed numeric targets at once: parse the visible mode's
+        entries and set the sliders (which drive the robot). A bad field is
+        skipped. Ends editing so entries resume reflecting the live state."""
+        entries = (list(zip(self.joint_sliders, self.joint_entries)) if self.mode == "joint"
+                   else [(self.task_sliders[n], self.task_entries[n]) for n in self.task_entries])
+        for slider, entry in entries:
+            try:
+                slider.set(float(entry.get()))
+            except ValueError:
+                pass
+        self._editing = False
+        self.root.focus_set()  # defocus entries so they resume reflecting state
+
+    def _cancel_edit(self):
+        """Discard in-progress typing (Escape) and resume the live readout."""
+        self._editing = False
+        self.root.focus_set()
 
     def _go_home(self):
         """Run a smooth quintic motion to HOME (not a teleport). Works from any
@@ -154,15 +203,16 @@ class ControlGUI:
     def _recover(self):
         self.robot.automatic_error_recovery()
         self.trip = None
+        self._editing = False
         self._sync_sliders_to_state()
 
     # -- control tick --------------------------------------------------
 
     def _build_command(self):
         if self.mode == "joint":
-            return JointPositions([s.get() for s in self.joint_sliders])
-        pos = np.array([self.task_sliders[n].get() for n in ("x", "y", "z")])
-        R = euler_to_mat(*[self.task_sliders[n].get()
+            return JointPositions(np.radians([s.get() for s in self.joint_sliders]))
+        pos = np.array([self.task_sliders[n].get() for n in ("x", "y", "z")]) / 100.0
+        R = euler_to_mat(*[math.radians(self.task_sliders[n].get())
                            for n in ("roll", "pitch", "yaw")])
         return CartesianPose(make_pose_vec(pos, R))
 
@@ -170,6 +220,8 @@ class ControlGUI:
         if not self.viewer.is_running():
             self.root.destroy()
             return
+        self.gripper.set_target_width(
+            self.gripper_slider.get() * self.gripper.max_width)  # 0..1 -> m, non-blocking
         for _ in range(self.substeps):
             try:
                 self._control_substep()
@@ -177,7 +229,31 @@ class ControlGUI:
                 self.trip = str(e)
         self.viewer.sync()
         self._update_status()
+        self._refresh_entries()
         self.root.after(TICK_MS, self._tick)
+
+    def _refresh_entries(self):
+        """Show the current value in every entry -- unless the user is composing
+        a command (editing), in which case leave them all alone so several typed
+        values persist together until Execute."""
+        if self._editing:
+            return
+        st = self.robot.read_once()
+        if self.mode == "joint":
+            for i, e in enumerate(self.joint_entries):
+                self._set_entry(e, f"{np.degrees(st.q[i]):.1f}")
+        else:
+            T = st.O_T_EE.reshape(4, 4, order="F")
+            vals = dict(zip(("x", "y", "z"), T[:3, 3] * 100.0))
+            vals.update(zip(("roll", "pitch", "yaw"),
+                            [math.degrees(a) for a in mat_to_euler(T[:3, :3])]))
+            for name, e in self.task_entries.items():
+                self._set_entry(e, f"{vals[name]:.1f}")
+
+    @staticmethod
+    def _set_entry(entry, text):
+        entry.delete(0, tk.END)
+        entry.insert(0, text)
 
     def _control_substep(self):
         """Advance one sim step: hold if tripped, stream the HOME trajectory if
@@ -199,8 +275,11 @@ class ControlGUI:
         p = self.data.site_xpos[self.robot._ee_site]
         J = self.robot._ik._jacobian(self.data)
         w = float(np.sqrt(max(np.linalg.det(J @ J.T), 0.0)))
-        msg = (f"mode={self.mode:5s}  EE=({p[0]:+.3f},{p[1]:+.3f},{p[2]:+.3f})  "
-               f"manip w={w:.3f}")
+        g = self.gripper.read_once()
+        msg = (f"mode={self.mode:5s}  EE=({p[0]*100:+.1f},{p[1]*100:+.1f},"
+               f"{p[2]*100:+.1f})cm\n"
+               f"manip w={w:.3f}   grip={g.width / g.max_width:.2f}"
+               f"{'  [GRASP]' if g.is_grasped else ''}")
         if self.trip:
             msg += f"\n⚠ SAFETY TRIP: {self.trip}\n   press Recover or HOME"
         self.status.config(text=msg)

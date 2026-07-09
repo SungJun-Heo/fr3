@@ -82,10 +82,16 @@ class Gripper:
 
     # -- motion (blocking, like the real gripper) ----------------------
 
-    def _drive_to(self, width):
-        """Command a target width and step the sim until it settles."""
+    def set_target_width(self, width):
+        """Set the gripper target *without stepping* -- for an external loop
+        that steps the sim itself (e.g. the GUI). Applied on the next mj_step,
+        so the gripper tracks alongside the arm."""
         self.data.ctrl[self._act] = float(np.clip(width / self.max_width * 255.0,
                                                    0.0, 255.0))
+
+    def _drive_to(self, width):
+        """Command a target width and step the sim until it settles."""
+        self.set_target_width(width)
         for _ in range(_SETTLE_STEPS):
             mujoco.mj_step(self.model, self.data)
 
