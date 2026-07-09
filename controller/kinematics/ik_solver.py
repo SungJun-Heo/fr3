@@ -78,6 +78,13 @@ class DLSIKSolver:
                     manipulability=w)
         return dq, info
 
+    def manipulability(self, q):
+        """Yoshikawa manipulability sqrt(det(J Jᵀ)) at configuration ``q``
+        (uses the scratch, so it does not touch live data)."""
+        self._fk(q)
+        J = self._jacobian(self.data)
+        return float(np.sqrt(max(np.linalg.det(J @ J.T), 0.0)))
+
     def dls_step(self, err, J):
         """The DLS increment: dq = Jᵀ (JJᵀ + λ²I)⁻¹ e (with a |dq| clamp)."""
         JJt = J @ J.T

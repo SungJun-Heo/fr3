@@ -236,10 +236,16 @@ class SimRobot:
             self._has_error = True
             self._error_reason = "IK produced NaN/inf"
             return
-        if info["manipulability"] < self._manip_min:
+        # Near-singularity: only trip if this step drives *deeper* into it. That
+        # way the arm can still hold or escape a low-manipulability pose (as the
+        # DLS brake intends) -- so recovery actually resumes control instead of
+        # instantly re-tripping.
+        w_now = info["manipulability"]
+        w_next = self._ik.manipulability(q_target)
+        if w_next < self._manip_min and w_next < w_now - 1e-4:
             self._has_error = True
-            self._error_reason = (f"near singularity "
-                                  f"(w={info['manipulability']:.4f} < {self._manip_min})")
+            self._error_reason = (f"near singularity (w={w_next:.4f} "
+                                  f"< {self._manip_min}, heading deeper)")
             return
         below = self._q_min - q_target
         above = q_target - self._q_max
