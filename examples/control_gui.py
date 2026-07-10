@@ -9,6 +9,11 @@ project uses, so in TASK mode the DLS IK and its safety guards (singularity /
 joint-limit / collision) are live -- reach too far and it trips; press Recover
 or HOME to resume.
 
+Execute does not snap to the target: it runs a smooth quintic joint move over
+the "exec(s)" time (JOINT mode to the slider angles; TASK mode solves IK for the
+slider EE pose first, then moves in joint space -- endpoint on the commanded
+pose, like move_to_pose). Set exec(s) small for a near-instant move.
+
 Usage:  python examples/control_gui.py [task]      (default task: "empty")
 """
 
@@ -66,8 +71,10 @@ class ControlGUI:
         self.gripper = Gripper(self.robot)
         self.trip = None
         self._editing = False    # True while the user is typing into entries
-        self._home_traj = None   # active quintic while a HOME motion runs
-        self._home_t = 0.0
+        self._notice = ""        # transient message (e.g. IK failed), shown in status
+        self._move_traj = None   # active quintic while a timed move (Execute/HOME) runs
+        self._move_t = 0.0
+        self._move_dur = 0.0
         self._build_ui()
         self._sync_sliders_to_state()
 
@@ -87,6 +94,11 @@ class ControlGUI:
         tk.Button(top, text="Execute", command=self._execute).pack(side=tk.LEFT, padx=4)
         tk.Button(top, text="HOME", command=self._go_home).pack(side=tk.LEFT, padx=4)
         tk.Button(top, text="Recover", command=self._recover).pack(side=tk.LEFT)
+        # How long Execute takes to reach the target (seconds). Small -> fast.
+        tk.Label(top, text="exec(s)").pack(side=tk.LEFT, padx=(8, 0))
+        self.exec_entry = tk.Entry(top, width=5)
+        self.exec_entry.insert(0, "2.0")
+        self.exec_entry.pack(side=tk.LEFT)
 
         # joint: slider + numeric entry per DOF (degrees)
         self.joint_frame = tk.LabelFrame(self.root, text="Joint targets (deg)")
@@ -171,10 +183,23 @@ class ControlGUI:
                    else self.robot.start_cartesian_pose_control())
         self._show_frame()
 
+    def _exec_time(self):
+        """Execution time (s) from the 'exec(s)' field; safe fallback on bad
+        input, clamped to a small minimum so the quintic always has a window."""
+        try:
+            return max(0.05, float(self.exec_entry.get()))
+        except (ValueError, AttributeError):
+            return 2.0
+
     def _execute(self):
-        """Apply ALL typed numeric targets at once: parse the visible mode's
-        entries and set the sliders (which drive the robot). A bad field is
-        skipped. Ends editing so entries resume reflecting the live state."""
+        """Apply the typed targets and move to them over the 'exec(s)' time as a
+        smooth quintic joint move (rather than snapping there).
+
+        Parses the visible mode's entries into the sliders, then picks a joint
+        goal: JOINT mode uses the slider angles directly; TASK mode solves IK
+        for the slider EE pose (endpoint on the commanded pose, path in joint
+        space -- like move_to_pose). A bad numeric field is skipped; an
+        unreachable task pose is reported and ignored (no motion)."""
         entries = (list(zip(self.joint_sliders, self.joint_entries)) if self.mode == "joint"
                    else [(self.task_sliders[n], self.task_entries[n]) for n in self.task_entries])
         for slider, entry in entries:
@@ -185,24 +210,52 @@ class ControlGUI:
         self._editing = False
         self.root.focus_set()  # defocus entries so they resume reflecting state
 
+        if self.mode == "joint":
+            q_goal = np.radians([s.get() for s in self.joint_sliders])
+        else:
+            pos = np.array([self.task_sliders[n].get() for n in ("x", "y", "z")]) / 100.0
+            R = euler_to_mat(*[math.radians(self.task_sliders[n].get())
+                               for n in ("roll", "pitch", "yaw")])
+            q_goal, info = self.robot._ik.solve(pos, R, q_init=self.robot.read_once().q)
+            if not info["converged"]:
+                # Unreachable: undo the target so live tracking doesn't rush at
+                # it, and leave a note (Execute is a no-op this time).
+                self._sync_sliders_to_state()
+                self._notice = (f"IK did not converge for that pose "
+                                f"(pos_err={info['pos_err']*1000:.1f}mm) -- ignored")
+                return
+        self._start_move(q_goal, self._exec_time())
+
     def _cancel_edit(self):
         """Discard in-progress typing (Escape) and resume the live readout."""
         self._editing = False
         self.root.focus_set()
 
-    def _go_home(self):
-        """Run a smooth quintic motion to HOME (not a teleport). Works from any
-        mode; the per-tick loop streams the trajectory as joint commands."""
-        self._recover()  # clear any trip first
-        home = self.model.key_qpos[0][:7].copy()
+    def _start_move(self, q_goal, duration):
+        """Begin a smooth quintic joint move from the current pose to ``q_goal``
+        over ``duration`` seconds. Clears any trip first (Execute/HOME both
+        double as an escape from a safe stop)."""
+        self.robot.automatic_error_recovery()
+        self.trip = None
+        self._notice = ""
         traj = QuinticTrajectoryGenerator()
-        traj.InitTrajectory(self.robot.read_once().q, home, 0.0, HOME_DURATION)
-        self._home_traj = traj
-        self._home_t = 0.0
+        traj.InitTrajectory(self.robot.read_once().q, np.asarray(q_goal, float),
+                            0.0, duration)
+        self._move_traj = traj
+        self._move_t = 0.0
+        self._move_dur = duration
+
+    def _go_home(self):
+        """Smooth quintic move to HOME (not a teleport). Works from any mode;
+        the per-tick loop streams the trajectory as joint commands."""
+        home = self.model.key_qpos[0][:7].copy()
+        self._start_move(home, HOME_DURATION)
 
     def _recover(self):
         self.robot.automatic_error_recovery()
         self.trip = None
+        self._notice = ""
+        self._move_traj = None   # abandon any in-progress move
         self._editing = False
         self._sync_sliders_to_state()
 
@@ -256,18 +309,18 @@ class ControlGUI:
         entry.insert(0, text)
 
     def _control_substep(self):
-        """Advance one sim step: hold if tripped, stream the HOME trajectory if
-        one is running, else track the sliders."""
+        """Advance one sim step: hold if tripped, stream an active timed move
+        (Execute/HOME) if one is running, else track the sliders live."""
         if self.trip is not None:
             mujoco.mj_step(self.model, self.data)
             return
-        if self._home_traj is not None:
-            self._home_t += self.model.opt.timestep
-            q = self._home_traj.getPositionTrajectory(self._home_t)
+        if self._move_traj is not None:
+            self._move_t += self.model.opt.timestep
+            q = self._move_traj.getPositionTrajectory(self._move_t)
             self.ac.writeOnce(JointPositions(q))
-            if self._home_t >= HOME_DURATION:
-                self._home_traj = None
-                self._sync_sliders_to_state()  # resume from HOME, no jump
+            if self._move_t >= self._move_dur:
+                self._move_traj = None
+                self._sync_sliders_to_state()  # resume live tracking, no jump
             return
         self.ac.writeOnce(self._build_command())
 
@@ -280,8 +333,12 @@ class ControlGUI:
                f"{p[2]*100:+.1f})cm\n"
                f"manip w={w:.3f}   grip={g.width / g.max_width:.2f}"
                f"{'  [GRASP]' if g.is_grasped else ''}")
+        if self._move_traj is not None:
+            msg += f"\nmoving... {self._move_t:.1f}/{self._move_dur:.1f}s"
         if self.trip:
             msg += f"\n⚠ SAFETY TRIP: {self.trip}\n   press Recover or HOME"
+        if self._notice:
+            msg += f"\n{self._notice}"
         self.status.config(text=msg)
 
     def run(self):
