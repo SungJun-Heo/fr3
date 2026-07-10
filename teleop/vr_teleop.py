@@ -89,6 +89,7 @@ class VRTeleop:
                  position_scale=1.0, smooth_tau=SMOOTH_TAU, view=True,
                  show_stats=True):
         self.show_stats = show_stats
+        self.task_name = task
         self.robot = SimRobot(task)
         self.model, self.data = self.robot.model, self.robot.data
         self.gripper = Gripper(self.robot)
@@ -279,7 +280,80 @@ class VRTeleop:
         print(f"[vr] loop {loop_fps:4.0f}Hz  work {work_ms:4.1f}ms  rt {rt:.2f}x "
               f"| input {in_fps:4.0f}fps  w={w:.3f} | {tag}", flush=True)
 
-    def run(self, max_ticks=None, on_tick=None):
+    # -- reset GUI -----------------------------------------------------
+
+    def _run_gui(self):
+        """Drive the teleop loop from a small Tk panel with reset buttons.
+
+        Mirrors control_gui's structure: the MuJoCo passive viewer plus a Tk
+        window whose ``after``-scheduled tick advances the sim. Button callbacks
+        run in the same (Tk main) thread as the tick, so they can touch MuJoCo
+        directly -- no locking, no races. The VR server stays a daemon thread
+        (it only touches VRState)."""
+        import tkinter as tk
+
+        print("[vr] teleop + reset GUI. Hold grip to move, index to grip, B for HOME.")
+        self.root = tk.Tk()
+        self.root.title(f"FR3 VR teleop [{self.task_name}]")
+        self.root.geometry("420x460")
+        btn_font = ("sans", 22, "bold")
+        # Status pinned to the bottom; the big buttons fill everything above it
+        # (each expands to ~1/3 of the window, so they dominate as asked).
+        self._gui_status = tk.Label(self.root, text="", justify=tk.LEFT,
+                                    anchor="w", font=("monospace", 11))
+        self._gui_status.pack(side=tk.BOTTOM, fill=tk.X, padx=8, pady=8)
+        for text, cmd, color in (
+            ("Reset objects", self._gui_reset_objects, "#cfe8cf"),
+            ("HOME robot", self._go_home, "#cfe0f2"),
+            ("Reset ALL", self._gui_reset_all, "#f4c88a"),
+        ):
+            tk.Button(self.root, text=text, command=cmd, font=btn_font,
+                      bg=color, activebackground=color
+                      ).pack(fill=tk.BOTH, expand=True, padx=8, pady=4)
+        self.root.after(TICK_MS, self._gui_tick)
+        try:
+            self.root.mainloop()
+        finally:
+            self.server.stop()
+            if self.viewer is not None:
+                self.viewer.close()
+
+    def _gui_tick(self):
+        # Closing the 3D viewer ends the session; reschedule with a
+        # work-compensated delay so the loop still holds ~1/TICK_MS (a plain
+        # after(TICK_MS) would run at 1/(work+TICK_MS), below real time).
+        if self.viewer is not None and not self.viewer.is_running():
+            self.root.destroy()
+            return
+        t0 = time.perf_counter()
+        self._tick()
+        if self.viewer is not None:
+            self.viewer.sync()
+        self._gui_update_status()
+        delay = max(1, int(round(TICK_MS - (time.perf_counter() - t0) * 1000)))
+        self.root.after(delay, self._gui_tick)
+
+    def _gui_reset_objects(self):
+        """Put task objects back at their start pose (arm untouched)."""
+        self.robot.reset_objects()
+
+    def _gui_reset_all(self):
+        """Objects back to start AND a smooth HOME for the arm."""
+        self.robot.reset_objects()
+        self._go_home()
+
+    def _gui_update_status(self):
+        snap = self.state.snapshot()
+        p = self.data.site_xpos[self.robot._ee_site]
+        g = self.gripper.read_once()
+        conn = "connected" if snap.connected else "waiting for VR client"
+        msg = (f"{conn}  |  {self._mode_tag(snap.connected)}\n"
+               f"EE=({p[0]*100:+.1f},{p[1]*100:+.1f},{p[2]*100:+.1f})cm   "
+               f"grip={g.width / g.max_width:.2f}"
+               f"{'  [GRASP]' if g.is_grasped else ''}")
+        self._gui_status.config(text=msg)
+
+    def run(self, max_ticks=None, on_tick=None, gui=False):
         """Run the teleop loop at a steady ~1/TICK_MS rate.
 
         Each iteration is paced by a work-compensated sleep, so the sim tracks
@@ -288,8 +362,12 @@ class VRTeleop:
         below target and wobbling with work. A 1 Hz stats line reports where any
         stutter lives (see ``_print_stats``).
 
-        ``max_ticks`` stops after N ticks (tests); ``on_tick(self)`` is called
-        each tick after stepping (lets a test observe EE/clutch state)."""
+        ``gui=True`` instead drives the loop from a small Tk reset panel (see
+        ``_run_gui``). ``max_ticks`` stops after N ticks (tests); ``on_tick(self)``
+        is called each tick after stepping (lets a test observe EE/clutch state)."""
+        if gui:
+            self._run_gui()
+            return
         print("[vr] teleop running. Hold grip to move, index to grip, B for HOME.")
         period = TICK_MS / 1000
         sim_per_tick = self.substeps * self.model.opt.timestep
@@ -344,11 +422,13 @@ def main():
                         help="command low-pass time constant (s); 0 disables")
     parser.add_argument("--stats", action="store_true",
                         help="print the 1 Hz loop/latency stats line")
+    parser.add_argument("--gui", action="store_true",
+                        help="show the reset-button GUI")
     parser.add_argument("--no-view", action="store_true", help="run headless")
     args = parser.parse_args()
     VRTeleop(task=args.task, hand=args.hand, host=args.host, port=args.port,
              position_scale=args.scale, smooth_tau=args.smooth_tau,
-             view=not args.no_view, show_stats=args.stats).run()
+             view=not args.no_view, show_stats=args.stats).run(gui=args.gui)
 
 
 if __name__ == "__main__":

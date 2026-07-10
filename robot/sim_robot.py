@@ -111,6 +111,19 @@ class SimRobot:
         self._q_max = self.model.jnt_range[jids, 1].copy()
         self._manip_min = 0.02  # Yoshikawa manipulability floor (near-singularity)
 
+        # Free-joint addresses of the task objects, so they can be snapped back
+        # to their declared start pose (qpos0, where scene.initial_state placed
+        # them) on demand -- teleop knocks things out of reach and you want them
+        # back without restarting. Static fixtures (no joint) are skipped.
+        self._object_qadr = []
+        self._object_vadr = []
+        for name in self._object_names:
+            body = self.model.body(name)
+            if body.jntnum[0] > 0:
+                jadr = body.jntadr[0]
+                self._object_qadr.append(int(self.model.jnt_qposadr[jadr]))
+                self._object_vadr.append(int(self.model.jnt_dofadr[jadr]))
+
     def read_once(self):
         """Return the current ``RobotState`` without advancing the sim."""
         # Recompute kinematics so site poses reflect the current qpos.
@@ -191,6 +204,17 @@ class SimRobot:
         libfranka; real acknowledges recoverable errors after a collision)."""
         self._has_error = False
         self._error_reason = ""
+
+    def reset_objects(self):
+        """Snap every task object back to its declared start pose (qpos0) and
+        zero its velocity; the arm is left untouched. This is the sim-only
+        escape hatch for teleop (no real-robot analog): when an object gets
+        knocked out of reach, put it back without restarting."""
+        for qadr in self._object_qadr:
+            self.data.qpos[qadr:qadr + 7] = self.model.qpos0[qadr:qadr + 7]
+        for vadr in self._object_vadr:
+            self.data.qvel[vadr:vadr + 6] = 0.0
+        mujoco.mj_forward(self.model, self.data)
 
     # --- collision reflex ----------------------------------------------
 

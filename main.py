@@ -3,10 +3,13 @@
 
 Usage:
   python main.py --mode gui [--task empty]     # hand-control GUI (joint/task)
-  python main.py --mode vr  [--task empty]     # VR teleop (Meta Quest over TCP)
+  python main.py --mode vr  [--task pick_cube] # VR teleop (Meta Quest over TCP)
 
-For VR: this launches the viewer + TCP server, then point a Meta-Quest Unity app
-(or ``python -m teleop.mock_vr_client``) at ``<this host>:<--port>``.
+For VR: this launches the viewer, a TCP server, and a small reset-button GUI
+(Reset objects / HOME robot / Reset ALL -- handy when teleop knocks an object
+out of reach). Point a Meta-Quest Unity app (or ``python -m
+teleop.mock_vr_client``) at ``<this host>:<--port>``. ``--no-gui`` hides the
+panel; ``--no-view`` runs headless.
 
 Add a mode by writing a ``run_*`` function and registering it in ``MODES``.
 """
@@ -29,7 +32,7 @@ def run_vr(args):
     from teleop import VRTeleop
     VRTeleop(task=args.task, hand=args.hand, host=args.host, port=args.port,
              position_scale=args.scale, smooth_tau=args.smooth_tau,
-             view=not args.no_view, show_stats=args.stats).run()
+             view=not args.no_view, show_stats=args.stats).run(gui=not args.no_gui)
 
 
 MODES = {
@@ -57,6 +60,8 @@ def main():
                         help="[vr] command low-pass time constant (s); 0 disables")
     parser.add_argument("--stats", action="store_true",
                         help="[vr] print the 1 Hz loop/latency stats line")
+    parser.add_argument("--no-gui", action="store_true",
+                        help="[vr] don't show the reset-button GUI")
     parser.add_argument("--no-view", action="store_true",
                         help="[vr] run headless (no viewer)")
     args = parser.parse_args()
