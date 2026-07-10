@@ -183,8 +183,13 @@ class VRTeleop:
 
     # -- HOME / recover ------------------------------------------------
 
-    def _go_home(self):
-        """Clear any block and start a smooth quintic motion to the HOME key."""
+    def go_home(self):
+        """Clear any block and start a smooth quintic motion to the HOME key.
+
+        Public reset API (also wired to the GUI button). Note this only *starts*
+        the trajectory -- the arm reaches HOME over the following ``_tick``s, so
+        the sim loop must keep running. Reuse with ``reset_objects``/``reset_all``
+        when scripting imitation-learning episodes."""
         self.robot.automatic_error_recovery()
         self._blocked = False
         home = self.model.key_qpos[0][:7].copy()
@@ -204,7 +209,7 @@ class VRTeleop:
 
         # HOME on the button's rising edge (so holding it fires once).
         if snap.home and not self._prev_home_btn:
-            self._go_home()
+            self.go_home()
         self._prev_home_btn = snap.home
 
         self._update_clutch(snap)
@@ -303,9 +308,9 @@ class VRTeleop:
                                     anchor="w", font=("monospace", 11))
         self._gui_status.pack(side=tk.BOTTOM, fill=tk.X, padx=8, pady=8)
         for text, cmd, color in (
-            ("Reset objects", self._gui_reset_objects, "#cfe8cf"),
-            ("HOME robot", self._go_home, "#cfe0f2"),
-            ("Reset ALL", self._gui_reset_all, "#f4c88a"),
+            ("Reset objects", self.reset_objects, "#cfe8cf"),
+            ("HOME robot", self.go_home, "#cfe0f2"),
+            ("Reset ALL", self.reset_all, "#f4c88a"),
         ):
             tk.Button(self.root, text=text, command=cmd, font=btn_font,
                       bg=color, activebackground=color
@@ -333,14 +338,28 @@ class VRTeleop:
         delay = max(1, int(round(TICK_MS - (time.perf_counter() - t0) * 1000)))
         self.root.after(delay, self._gui_tick)
 
-    def _gui_reset_objects(self):
-        """Put task objects back at their start pose (arm untouched)."""
+    def reset_objects(self):
+        """Put task objects back at their start pose (arm untouched).
+
+        Public reset API (also wired to the GUI button); thin passthrough to
+        ``robot.reset_objects`` so the teleop object exposes one uniform reset
+        surface for imitation-learning data collection."""
         self.robot.reset_objects()
 
-    def _gui_reset_all(self):
-        """Objects back to start AND a smooth HOME for the arm."""
+    def reset_all(self):
+        """Objects and arm *instantly* back to start -- a synchronous reset.
+
+        Public reset API (also wired to the GUI button). Unlike ``go_home`` this
+        completes in-place with no sim loop to play out, so imitation-learning
+        collection can reset between episodes and read a settled state right away.
+        Cancels any in-flight quintic HOME and re-anchors teleop at the new pose
+        so it resumes without a jump."""
+        self._home_traj = None            # cancel a streamed HOME if one is running
         self.robot.reset_objects()
-        self._go_home()
+        self.robot.reset_home()           # instant arm snap to HOME (holds there)
+        self._blocked = False
+        self._engaged = False             # force a fresh clutch anchor
+        self._resync_cmd()                # commanded pose <- new (HOME) EE pose
 
     def _gui_update_status(self):
         snap = self.state.snapshot()

@@ -216,6 +216,21 @@ class SimRobot:
             self.data.qvel[vadr:vadr + 6] = 0.0
         mujoco.mj_forward(self.model, self.data)
 
+    def reset_home(self, q=None):
+        """Snap the arm *instantly* to a joint configuration (default: the HOME
+        keyframe), zeroing velocity and pointing the actuators at it so it holds
+        there. Unlike a streamed quintic HOME this needs no control loop to play
+        out -- a synchronous escape hatch for resetting between imitation-learning
+        episodes. Also clears any latched reflex/error. Sim-only (no real-robot
+        analog), like ``reset_objects``."""
+        q = self.model.key_qpos[0][:7] if q is None else q
+        q = np.asarray(q, dtype=float)
+        self.data.qpos[self._qadr] = q
+        self.data.qvel[self._vadr] = 0.0
+        self.data.ctrl[self._act_arm] = q  # hold HOME, don't pull back
+        self.automatic_error_recovery()
+        mujoco.mj_forward(self.model, self.data)
+
     # --- collision reflex ----------------------------------------------
 
     def _update_external_estimate(self):
@@ -261,15 +276,24 @@ class SimRobot:
 
         In ``"trip"`` mode (default, fidelity): if the step would produce NaN,
         drive near a singularity, or exceed a joint limit, latch ``_has_error``
-        and raise. In ``"clamp"`` mode (teleop): never fault -- hold on NaN, and
-        otherwise clip to joint limits (the DLS damping already brakes near
-        singularities), so tracking slows/limits smoothly instead of stopping."""
+        and raise. In ``"clamp"`` mode (teleop): never fault -- hold on NaN, hold
+        at the near-singularity floor (soft wall), else clip to joint limits, so
+        tracking slows/holds smoothly instead of stopping or sagging."""
         T = np.asarray(command.O_T_EE, dtype=float).reshape(4, 4, order="F")
         dq, info = self._ik.velocity_step(self.data, T[:3, 3], T[:3, :3])
         q_target = self.data.qpos[self._qadr] + dq
         if self._cart_safety == "clamp":
             if not np.all(np.isfinite(q_target)):
                 return self.data.ctrl[self._act_arm].copy()  # hold on NaN/inf
+            # Soft wall: DLS damping alone still lets an unreachable target drag
+            # the arm to full extension (w->0), where it sags below the command
+            # and reads as "going limp". Once below the manipulability floor,
+            # hold the last ctrl target for any step heading *deeper* in -- the
+            # stiff servo then holds the last reachable pose. Steps that raise w
+            # (retreating out) still pass, so the arm can always escape.
+            w_next = self._ik.manipulability(q_target)
+            if w_next < self._manip_min and w_next < info["manipulability"] - 1e-4:
+                return self.data.ctrl[self._act_arm].copy()
             return np.clip(q_target, self._q_min, self._q_max)
         self._check_ik_safety(q_target, info)
         if self._has_error:

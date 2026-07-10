@@ -43,8 +43,8 @@ MODES = {
 
 def main():
     parser = argparse.ArgumentParser(description="fr3 sim entry point")
-    parser.add_argument("--mode", choices=list(MODES), default="gui",
-                        help="what to run (default: gui)")
+    parser.add_argument("--mode", choices=list(MODES), default="vr",
+                        help="what to run (default: vr)")
     parser.add_argument("--task", default="empty",
                         help="scene/task name (default: empty)")
     # VR-mode options (ignored by other modes).
@@ -54,7 +54,7 @@ def main():
                         help="[vr] TCP bind address for the VR server")
     parser.add_argument("--port", type=int, default=8081,
                         help="[vr] TCP port for the VR server")
-    parser.add_argument("--scale", type=float, default=1.0,
+    parser.add_argument("--scale", type=float, default=2.0,
                         help="[vr] hand->EE position scale")
     parser.add_argument("--smooth-tau", type=float, default=0.0,
                         help="[vr] command low-pass time constant (s); 0 disables")
