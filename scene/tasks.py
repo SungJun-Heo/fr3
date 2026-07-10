@@ -23,24 +23,24 @@ TASKS = {
     # Just the base scene, nothing to manipulate.
     "empty": dict(base="fr3_with_gripper", objects=[]),
 
-    # Single cube to pick up.
+    # Single cube to pick up. Sized well within the 0.08 m gripper opening.
     "pick_cube": dict(base="fr3_with_gripper", objects=[
-        dict(kind="box", name="cube", pos=[0.5, 0.0, 0.03],
-             size=[0.03, 0.03, 0.03], rgba=RED),
+        dict(kind="box", name="cube", pos=[0.5, 0.0, 0.02],
+             size=[0.02, 0.02, 0.02], rgba=RED),
     ]),
 
     # Two blocks to stack.
     "stack_blocks": dict(base="fr3_with_gripper", objects=[
-        dict(kind="box", name="block_a", pos=[0.45, 0.12, 0.03],
-             size=[0.03, 0.03, 0.03], rgba=RED),
-        dict(kind="box", name="block_b", pos=[0.55, -0.12, 0.03],
-             size=[0.03, 0.03, 0.03], rgba=BLUE),
+        dict(kind="box", name="block_a", pos=[0.45, 0.12, 0.02],
+             size=[0.02, 0.02, 0.02], rgba=RED),
+        dict(kind="box", name="block_b", pos=[0.55, -0.12, 0.02],
+             size=[0.02, 0.02, 0.02], rgba=BLUE),
     ]),
 
     # A cylinder to drop into a bin.
     "bin_picking": dict(base="fr3_with_gripper", objects=[
         dict(kind="bin", name="bin", pos=[0.6, 0.15, 0.0]),
-        dict(kind="cylinder", name="peg", pos=[0.45, -0.1, 0.05],
-             size=[0.02, 0.05], rgba=GREEN),
+        dict(kind="cylinder", name="peg", pos=[0.45, -0.1, 0.04],
+             size=[0.015, 0.04], rgba=GREEN),
     ]),
 }

@@ -43,6 +43,10 @@ class Gripper:
         # robot the arm connects to).
         self.model, self.data = robot.model, robot.data
         self._act = self.model.actuator("gripper").id
+        # Full actuator force authority (the model's forcerange). move()/homing()
+        # restore it; grasp() narrows it to its requested force so a caught
+        # object is squeezed with exactly that much (and no more).
+        self._default_force = float(self.model.actuator_forcerange[self._act, 1])
         self._fj1 = self.model.joint("finger_joint1").qposadr[0]
         self._fj2 = self.model.joint("finger_joint2").qposadr[0]
         finger = {self.model.body("left_finger").id, self.model.body("right_finger").id}
@@ -89,6 +93,11 @@ class Gripper:
         self.data.ctrl[self._act] = float(np.clip(width / self.max_width * 255.0,
                                                    0.0, 255.0))
 
+    def _set_force_limit(self, force):
+        """Cap the gripper actuator's output force (N). This is what separates a
+        force-controlled ``grasp`` from a position-only ``move``."""
+        self.model.actuator_forcerange[self._act] = [-abs(force), abs(force)]
+
     def _drive_to(self, width):
         """Command a target width and step the sim until it settles."""
         self.set_target_width(width)
@@ -97,22 +106,36 @@ class Gripper:
 
     def homing(self):
         """Open fully and (re)estimate the maximum width."""
+        self._set_force_limit(self._default_force)
         self._drive_to(MAX_WIDTH)
         self.max_width = self.width()
         return True
 
     def move(self, width, speed):
-        """Move the fingers to ``width`` (``speed`` accepted for parity)."""
+        """Position the fingers at ``width`` (``speed`` accepted for parity).
+
+        Position move only, like libfranka's ``Gripper.move``: the servo tracks
+        ``width`` but applies no sustained clamping force -- use ``grasp`` to
+        actually hold an object. Restores full servo force first, so a move after
+        a (force-limited) grasp isn't stuck at that grasp's cap."""
+        self._set_force_limit(self._default_force)
         self._drive_to(width)
         return True
 
     def grasp(self, width, speed, force=60.0, epsilon_inner=0.005,
               epsilon_outer=0.005):
-        """Close toward ``width`` and report whether an object was grasped.
+        """Close toward ``width`` and squeeze a caught object with ``force`` (N).
 
-        Commanding a width at or below the object squeezes it; ``is_grasped``
+        Unlike ``move`` (position only), this mirrors libfranka's
+        ``Gripper.grasp``: it applies a sustained clamping force and reports
+        whether an object was grasped. ``force`` caps the fingers' squeeze -- the
+        servo drives to a full close but actuator force is limited to ``force``,
+        so a small value grips gently and a large one grips hard (up to what the
+        actuator can deliver on the object). The cap stays engaged after the call
+        so the hold persists while the arm carries the object. ``is_grasped``
         then reflects the finger-object contact (matching camel-franka's
         ``grasp(0.0, ...)`` = 'succeeds when an object is detected')."""
+        self._set_force_limit(min(force, self._default_force))
         self._drive_to(width)
         return self.read_once().is_grasped
 

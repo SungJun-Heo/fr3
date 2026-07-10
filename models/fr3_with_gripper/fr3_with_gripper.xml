@@ -247,7 +247,14 @@
     <position class="fr3" name="fr3_joint5" joint="fr3_joint5" kp="2000" kv="200"/>
     <position class="fr3" name="fr3_joint6" joint="fr3_joint6" kp="2000" kv="200"/>
     <position class="fr3" name="fr3_joint7" joint="fr3_joint7" kp="2000" kv="200"/>
-    <general name="gripper" tendon="split" forcerange="-100 100" ctrlrange="0 255" gainprm="0.01568627451 0 0" biastype="affine" biasprm="0 -100 -10"/>
+    <!-- Gripper position servo. Stiffness (gain + position bias) scaled 25x over
+         the stock Panda actuator so a full close actually clamps an object
+         (~40-50 N on the task cubes) instead of the stock ~2 N, which was too
+         weak to hold against arm motion. The ctrl<->width map is unchanged: the
+         gain and position-bias scale together, so equilibrium width per ctrl is
+         identical; only the force at a given position error grows. Damping
+         scaled ~5x (sqrt of stiffness) to stay near critically damped. -->
+    <general name="gripper" tendon="split" forcerange="-100 100" ctrlrange="0 255" gainprm="0.3921568627 0 0" biastype="affine" biasprm="0 -2500 -50"/>
 
   </actuator>
   <tendon>
