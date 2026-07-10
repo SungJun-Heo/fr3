@@ -46,9 +46,11 @@ class Monitor:
         self._reset()
 
     def _reset(self):
-        self.ages = []   # recv->loop age (ms) of each fresh frame this window
-        self.lags = []   # commanded-vs-actual EE distance (mm) while engaged
-        self.fresh = 0   # ticks that saw a new frame
+        self.ages = []    # recv->loop age (ms) of each fresh frame this window
+        self.lags = []    # commanded-vs-actual EE distance (mm) while engaged
+        self.frames = 0   # actual VR frames received this window (true rate)
+        self.fresh = 0    # ticks that saw >=1 new frame
+        self.max_burst = 0  # most frames arriving in a single tick
         self.ticks = 0
         self.engaged = 0
 
@@ -58,16 +60,22 @@ class Monitor:
         ee = tele.data.site_xpos[tele.robot._ee_site]
         self.ticks += 1
 
-        if snap.connected and snap.frames != self.last_frames:
+        # Frames since the previous tick. >1 means a burst (the server parsed
+        # several backed-up frames at once -- the fingerprint of a starved
+        # server thread, e.g. GIL held by the render/step-heavy main loop).
+        burst = snap.frames - self.last_frames if snap.connected else 0
+        self.last_frames = snap.frames
+        if burst > 0:
+            self.frames += burst
             self.fresh += 1
+            self.max_burst = max(self.max_burst, burst)
             age_ms = (now - snap.stamp) * 1000.0 if snap.stamp > 0 else 0.0
             self.ages.append(age_ms)
             if self.trace:
-                print(f"  frame {snap.frames:6d}  age {age_ms:5.1f}ms  "
+                print(f"  frames +{burst:<2d} (#{snap.frames})  age {age_ms:5.1f}ms  "
                       f"grip {snap.grip:.2f} trig {snap.trigger:.2f}  "
                       f"EE ({ee[0]*100:+.1f},{ee[1]*100:+.1f},{ee[2]*100:+.1f})cm",
                       flush=True)
-        self.last_frames = snap.frames
 
         if tele._engaged:
             self.engaged += 1
@@ -82,13 +90,17 @@ class Monitor:
         if not snap.connected:
             print("[monitor] waiting for a VR client...", flush=True)
             return
-        fps = self.fresh / dt
+        true_fps = self.frames / dt   # actual frames/sec (counts bursts)
+        fresh_fps = self.fresh / dt   # ticks/sec that got any new data
         am, ax = (np.mean(self.ages), np.max(self.ages)) if self.ages else (0.0, 0.0)
         lm, lx = (np.mean(self.lags), np.max(self.lags)) if self.lags else (0.0, 0.0)
         eng = 100.0 * self.engaged / max(self.ticks, 1)
-        print(f"[monitor] in {fps:4.0f}fps  fresh {self.fresh:3d}/{self.ticks:2d}tk | "
-              f"age(recv->loop) mean {am:4.1f} max {ax:4.1f} ms | "
-              f"EE lag mean {lm:4.1f} max {lx:4.1f} mm | engaged {eng:3.0f}%",
+        # If true_fps stays high but fresh is low with burst>1, frames are
+        # arriving clumped (server starved); if true_fps itself drops, fewer
+        # frames are actually being received (network / headset side).
+        print(f"[monitor] in {true_fps:4.0f}fps (fresh {self.fresh:2d}/{self.ticks:2d}tk "
+              f"burst<= {self.max_burst}) | age {am:4.1f}/{ax:4.1f}ms | "
+              f"EE lag {lm:5.1f}/{lx:5.1f}mm | eng {eng:3.0f}%",
               flush=True)
 
 
