@@ -84,7 +84,6 @@ class VRTeleop:
         self._home_traj = None   # active quintic while HOME runs
         self._home_t = 0.0
         self._prev_home_btn = False
-        self._last_status = 0.0
 
         # VR input pipeline: server thread -> VRState -> this loop.
         self.state = VRState()
@@ -181,49 +180,74 @@ class VRTeleop:
             return
         self.ac.writeOnce(CartesianPose(make_pose_vec(self._cmd_pos, self._cmd_R)))
 
-    def _print_status(self, snap):
-        """Throttled one-line status (the headless stand-in for the viewer)."""
-        now = time.perf_counter()
-        if now - self._last_status < 0.5:
-            return
-        self._last_status = now
-        p = self.data.site_xpos[self.robot._ee_site]
-        if not snap.connected:
-            mode = "no client"
-        elif self._home_traj is not None:
-            mode = "HOME"
-        elif self._trip is not None:
-            mode = "TRIP"
-        elif self._engaged:
-            mode = "ENGAGED"
-        else:
-            mode = "idle"
-        g = self.gripper.read_once()
-        msg = (f"[vr] {mode:9s} EE=({p[0]*100:+.1f},{p[1]*100:+.1f},"
-               f"{p[2]*100:+.1f})cm grip={g.width/g.max_width:.2f}")
-        if self._trip:
-            msg += f"  TRIP: {self._trip} (press B)"
-        print(msg, flush=True)
+    def _mode_tag(self, connected):
+        if not connected:
+            return "no client"
+        if self._trip is not None:
+            return "TRIP"
+        if self._home_traj is not None:
+            return "HOME"
+        return "engaged" if self._engaged else "idle"
+
+    def _print_stats(self, dt, ticks, work, prev_frames, sim_per_tick):
+        """One-line health readout (once/sec) -- the numbers that localise a
+        stutter: loop rate, per-tick work, sim real-time factor, VR input rate.
+
+        Read it as: ``rt`` well below 1.0 => the loop can't keep real time (work
+        too heavy, or rendering); ``input`` far below the loop rate => the
+        network/headset is the bottleneck, not us; ``work`` near the tick period
+        => raise TICK_MS or cut substeps."""
+        snap = self.state.snapshot()
+        loop_fps = ticks / dt
+        work_ms = 1000.0 * work / max(ticks, 1)
+        in_fps = (snap.frames - prev_frames) / dt
+        rt = loop_fps * sim_per_tick  # sim seconds advanced per wall second
+        print(f"[vr] loop {loop_fps:4.0f}Hz  work {work_ms:4.1f}ms  rt {rt:.2f}x "
+              f"| input {in_fps:4.0f}fps | {self._mode_tag(snap.connected)}",
+              flush=True)
 
     def run(self, max_ticks=None, on_tick=None):
-        """Run the teleop loop at ~real time.
+        """Run the teleop loop at a steady ~1/TICK_MS rate.
+
+        Each iteration is paced by a work-compensated sleep, so the sim tracks
+        real time instead of drifting slower (and jittering) under per-tick load
+        -- the naive ``sleep(period)`` makes the loop run at ``1/(work+period)``,
+        below target and wobbling with work. A 1 Hz stats line reports where any
+        stutter lives (see ``_print_stats``).
 
         ``max_ticks`` stops after N ticks (tests); ``on_tick(self)`` is called
         each tick after stepping (lets a test observe EE/clutch state)."""
         print("[vr] teleop running. Hold grip to move, index to grip, B for HOME.")
+        period = TICK_MS / 1000
+        sim_per_tick = self.substeps * self.model.opt.timestep
         tick = 0
+        stat_t0 = time.perf_counter()
+        stat_ticks = 0
+        stat_work = 0.0
+        stat_frames = self.state.snapshot().frames
         try:
             while True:
                 if self.viewer is not None and not self.viewer.is_running():
                     break
+                t0 = time.perf_counter()
                 self._tick()
                 if self.viewer is not None:
                     self.viewer.sync()
-                else:
-                    self._print_status(self.state.snapshot())
                 if on_tick is not None:
                     on_tick(self)
-                time.sleep(TICK_MS / 1000)
+                stat_work += time.perf_counter() - t0
+                stat_ticks += 1
+
+                now = time.perf_counter()
+                if now - stat_t0 >= 1.0:
+                    self._print_stats(now - stat_t0, stat_ticks, stat_work,
+                                      stat_frames, sim_per_tick)
+                    stat_t0, stat_ticks, stat_work = now, 0, 0.0
+                    stat_frames = self.state.snapshot().frames
+
+                sleep = period - (time.perf_counter() - t0)
+                if sleep > 0:
+                    time.sleep(sleep)
                 tick += 1
                 if max_ticks is not None and tick >= max_ticks:
                     break

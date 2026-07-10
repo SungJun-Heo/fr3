@@ -115,6 +115,7 @@ class VRSnapshot:
     home: bool
     connected: bool
     tracking: bool
+    frames: int  # total frames published (for measuring input rate)
 
 
 class VRState:
@@ -133,6 +134,7 @@ class VRState:
         self._home = False
         self._connected = False
         self._tracking = False
+        self._frames = 0  # incremented each publish; lets the loop measure input fps
 
     def publish(self, hand_tf, grip, trigger, home, tracking):
         with self._lock:
@@ -141,6 +143,7 @@ class VRState:
             self._trigger = float(trigger)
             self._home = bool(home)
             self._tracking = bool(tracking)
+            self._frames += 1
 
     def set_connected(self, flag):
         """Flag (dis)connection. On disconnect we also clear ``tracking`` so a
@@ -153,7 +156,8 @@ class VRState:
     def snapshot(self):
         with self._lock:
             return VRSnapshot(self._hand_tf.copy(), self._grip, self._trigger,
-                              self._home, self._connected, self._tracking)
+                              self._home, self._connected, self._tracking,
+                              self._frames)
 
 
 class VRTeleopServer:
@@ -195,6 +199,10 @@ class VRTeleopServer:
                     conn, addr = s.accept()
                 except socket.timeout:
                     continue
+                # Disable Nagle: pose frames are tiny and time-critical, so we
+                # want each sent the instant it is ready, not coalesced (Nagle
+                # batching over WiFi is a classic teleop-stutter cause).
+                conn.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
                 print(f"[vr] connected: {addr}")
                 self.state.set_connected(True)
                 try:
