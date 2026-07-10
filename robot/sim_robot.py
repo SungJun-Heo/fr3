@@ -88,6 +88,11 @@ class SimRobot:
         self._has_error = False
         self._error_reason = ""
         self._active = None
+        # How Cartesian tracking handles an unsafe step: "trip" (default) faults
+        # like the real robot; "clamp" instead brakes/limits and keeps going --
+        # smooth for teleop, where a hard stop at a singularity feels like a
+        # stutter. Set by start_cartesian_pose_control(safety=...).
+        self._cart_safety = "trip"
 
         # External-force estimate (filled after each control step) and its
         # low-pass state. Filtering mirrors the real robot's *_hat_filtered
@@ -142,13 +147,24 @@ class SimRobot:
         self._active = ActiveControl(self, mode)
         return self._active
 
-    def start_cartesian_pose_control(self, mode=ControllerMode.CartesianImpedance):
+    def start_cartesian_pose_control(self, mode=ControllerMode.CartesianImpedance,
+                                     safety="trip"):
         """Begin an external Cartesian-pose control loop. Stream ``CartesianPose``
         commands via ``writeOnce``; each is tracked with one DLS IK step.
 
         On the real robot the firmware does this conversion; here the sim does
         it, so the same streaming code (VLA, teleop, a scripted path) runs on
-        both."""
+        both.
+
+        ``safety`` picks what an unsafe step does:
+          * ``"trip"`` (default) -- fault like the real robot: NaN, a
+            singularity, or a joint limit latches an error and ``writeOnce``
+            raises (recover with ``automatic_error_recovery``).
+          * ``"clamp"`` -- no fault: the DLS damping already brakes near
+            singularities and the output is clipped to joint limits, so tracking
+            just slows/limits smoothly. Meant for teleop, where a hard stop at a
+            singularity reads as a stutter."""
+        self._cart_safety = safety
         self._active = ActiveControl(self, mode)
         return self._active
 
@@ -219,12 +235,18 @@ class SimRobot:
     def _cartesian_to_ctrl(self, command):
         """Turn a ``CartesianPose`` into an arm ctrl target via one DLS IK step.
 
-        Safety (fidelity: trip like the real robot instead of silently doing
-        something unsafe): if the step would produce NaN, drive near a
-        singularity, or exceed a joint limit, latch ``_has_error`` and raise."""
+        In ``"trip"`` mode (default, fidelity): if the step would produce NaN,
+        drive near a singularity, or exceed a joint limit, latch ``_has_error``
+        and raise. In ``"clamp"`` mode (teleop): never fault -- hold on NaN, and
+        otherwise clip to joint limits (the DLS damping already brakes near
+        singularities), so tracking slows/limits smoothly instead of stopping."""
         T = np.asarray(command.O_T_EE, dtype=float).reshape(4, 4, order="F")
         dq, info = self._ik.velocity_step(self.data, T[:3, 3], T[:3, :3])
         q_target = self.data.qpos[self._qadr] + dq
+        if self._cart_safety == "clamp":
+            if not np.all(np.isfinite(q_target)):
+                return self.data.ctrl[self._act_arm].copy()  # hold on NaN/inf
+            return np.clip(q_target, self._q_min, self._q_max)
         self._check_ik_safety(q_target, info)
         if self._has_error:
             raise RuntimeError(f"IK safety trip: {self._error_reason}")

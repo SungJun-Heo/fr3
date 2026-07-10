@@ -28,7 +28,8 @@ def run_vr(args):
     """Launch VR teleoperation (Meta Quest streams hand pose over TCP)."""
     from teleop import VRTeleop
     VRTeleop(task=args.task, hand=args.hand, host=args.host, port=args.port,
-             position_scale=args.scale, view=not args.no_view).run()
+             position_scale=args.scale, smooth_tau=args.smooth_tau,
+             view=not args.no_view).run()
 
 
 MODES = {
@@ -52,6 +53,8 @@ def main():
                         help="[vr] TCP port for the VR server")
     parser.add_argument("--scale", type=float, default=1.0,
                         help="[vr] hand->EE position scale")
+    parser.add_argument("--smooth-tau", type=float, default=0.0,
+                        help="[vr] command low-pass time constant (s); 0 disables")
     parser.add_argument("--no-view", action="store_true",
                         help="[vr] run headless (no viewer)")
     args = parser.parse_args()

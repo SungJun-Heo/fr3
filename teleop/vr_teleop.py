@@ -47,6 +47,10 @@ from teleop.vr_server import VRState, VRTeleopServer
 TICK_MS = 20            # control/UI tick period (matches control_gui)
 HOME_DURATION = 2.0     # seconds for the HOME motion
 GRIP_ENGAGE = 0.5       # grip trigger above this = clutch engaged
+SMOOTH_TAU = 0.0        # default command low-pass time constant (s); 0 = off.
+                        # The sim's position servo already smooths, so this is
+                        # off by default (adds latency); raise it (e.g. 0.05) if
+                        # a real headset's input jitter shows through.
 
 
 def make_pose_vec(pos, R):
@@ -57,15 +61,47 @@ def make_pose_vec(pos, R):
     return T.flatten(order="F")
 
 
+def slerp_toward(R_cur, R_tgt, a):
+    """Rotate ``R_cur`` a fraction ``a`` in [0,1] of the way toward ``R_tgt``.
+
+    Geodesic (shortest-arc) step: take the relative rotation, scale its angle by
+    ``a`` (Rodrigues), and apply it. Used to low-pass the commanded orientation
+    so bursty VR input becomes smooth wrist motion. Per-tick deltas are tiny, so
+    the near-180 degrees degeneracy is not a concern here."""
+    R_rel = R_tgt @ R_cur.T
+    cos_ang = np.clip((np.trace(R_rel) - 1.0) * 0.5, -1.0, 1.0)
+    ang = math.acos(cos_ang)
+    if ang < 1e-8:
+        return R_tgt.copy()
+    axis = np.array([R_rel[2, 1] - R_rel[1, 2],
+                     R_rel[0, 2] - R_rel[2, 0],
+                     R_rel[1, 0] - R_rel[0, 1]]) / (2.0 * math.sin(ang))
+    da = a * ang
+    K = np.array([[0.0, -axis[2], axis[1]],
+                  [axis[2], 0.0, -axis[0]],
+                  [-axis[1], axis[0], 0.0]])
+    R_step = np.eye(3) + math.sin(da) * K + (1.0 - math.cos(da)) * (K @ K)
+    return R_step @ R_cur
+
+
 class VRTeleop:
     def __init__(self, task="empty", hand="right", host="0.0.0.0", port=8081,
-                 position_scale=1.0, view=True):
+                 position_scale=1.0, smooth_tau=SMOOTH_TAU, view=True):
         self.robot = SimRobot(task)
         self.model, self.data = self.robot.model, self.robot.data
         self.gripper = Gripper(self.robot)
-        self.ac = self.robot.start_cartesian_pose_control()
+        # "clamp" safety: near a singularity or joint limit the arm slows/limits
+        # smoothly instead of hard-tripping -- a trip there reads as a stutter.
+        self.ac = self.robot.start_cartesian_pose_control(safety="clamp")
         self.position_scale = float(position_scale)
         self.substeps = max(1, round(TICK_MS / 1000 / self.model.opt.timestep))
+
+        # Command low-pass: each substep the pose actually sent to the arm slews
+        # a fraction toward the clutch target, so bursty/jittery VR input (WiFi
+        # delivery, 72->50 Hz undersampling) comes out as smooth motion. alpha
+        # is per substep; smooth_tau=0 sends the raw target (no smoothing).
+        self._cmd_alpha = (1.0 - math.exp(-self.model.opt.timestep / smooth_tau)
+                           if smooth_tau > 0 else 1.0)
 
         # Clutch state. ``_engaged`` tracks the grip edge; the anchors are the
         # hand pose and EE pose captured the instant the clutch last engaged.
@@ -76,9 +112,12 @@ class VRTeleop:
 
         # Persistent commanded pose. When disengaged we keep streaming this
         # (frozen) pose so the arm holds; it starts at the current EE pose.
+        # ``_cmd_*_filt`` is the low-passed pose actually sent to the arm.
         p, R = self._ee_pose()
         self._cmd_pos = p
         self._cmd_R = R
+        self._cmd_pos_filt = p.copy()
+        self._cmd_R_filt = R.copy()
 
         # Soft-wall state: True on the ticks a near-singularity / joint-limit
         # holds the arm. Unlike a latched fault it clears itself the moment the
@@ -107,8 +146,11 @@ class VRTeleop:
         return T[:3, 3].copy(), T[:3, :3].copy()
 
     def _resync_cmd(self):
-        """Point the commanded pose at the current EE (no jump on resume)."""
+        """Point the commanded pose (and its filtered copy) at the current EE,
+        so teleop resumes from HOME/recover without a jump."""
         self._cmd_pos, self._cmd_R = self._ee_pose()
+        self._cmd_pos_filt = self._cmd_pos.copy()
+        self._cmd_R_filt = self._cmd_R.copy()
 
     # -- clutch (the ported set_vr_trajectory) -------------------------
 
@@ -187,8 +229,15 @@ class VRTeleop:
                 self._home_traj = None
                 self._resync_cmd()  # resume teleop from HOME without a jump
             return
+        # Low-pass the commanded pose toward the clutch target before sending it
+        # (position: exponential lerp; orientation: geodesic slerp). This is the
+        # smoothing that turns jittery VR input into steady arm motion.
+        a = self._cmd_alpha
+        self._cmd_pos_filt += a * (self._cmd_pos - self._cmd_pos_filt)
+        self._cmd_R_filt = slerp_toward(self._cmd_R_filt, self._cmd_R, a)
         try:
-            self.ac.writeOnce(CartesianPose(make_pose_vec(self._cmd_pos, self._cmd_R)))
+            self.ac.writeOnce(CartesianPose(
+                make_pose_vec(self._cmd_pos_filt, self._cmd_R_filt)))
         except RuntimeError as e:
             self.robot.automatic_error_recovery()
             mujoco.mj_step(self.model, self.data)  # hold pose, keep time moving
@@ -217,9 +266,16 @@ class VRTeleop:
         work_ms = 1000.0 * work / max(ticks, 1)
         in_fps = (snap.frames - prev_frames) / dt
         rt = loop_fps * sim_per_tick  # sim seconds advanced per wall second
+        # Yoshikawa manipulability: how far from a singularity the arm is. In
+        # clamp mode the arm slows smoothly as this drops (no stutter); watch it
+        # dip when you steer into an extended/awkward pose.
+        J = self.robot._ik._jacobian(self.data)
+        w = float(np.sqrt(max(np.linalg.det(J @ J.T), 0.0)))
+        tag = self._mode_tag(snap.connected)
+        if w < 0.04:
+            tag += " near-sing"
         print(f"[vr] loop {loop_fps:4.0f}Hz  work {work_ms:4.1f}ms  rt {rt:.2f}x "
-              f"| input {in_fps:4.0f}fps | {self._mode_tag(snap.connected)}",
-              flush=True)
+              f"| input {in_fps:4.0f}fps  w={w:.3f} | {tag}", flush=True)
 
     def run(self, max_ticks=None, on_tick=None):
         """Run the teleop loop at a steady ~1/TICK_MS rate.
@@ -281,10 +337,13 @@ def main():
     parser.add_argument("--port", type=int, default=8081)
     parser.add_argument("--scale", type=float, default=1.0,
                         help="hand->EE position scale")
+    parser.add_argument("--smooth-tau", type=float, default=SMOOTH_TAU,
+                        help="command low-pass time constant (s); 0 disables")
     parser.add_argument("--no-view", action="store_true", help="run headless")
     args = parser.parse_args()
     VRTeleop(task=args.task, hand=args.hand, host=args.host, port=args.port,
-             position_scale=args.scale, view=not args.no_view).run()
+             position_scale=args.scale, smooth_tau=args.smooth_tau,
+             view=not args.no_view).run()
 
 
 if __name__ == "__main__":
