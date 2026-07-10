@@ -22,7 +22,7 @@ import mujoco
 import mujoco.viewer
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
-from robot import SimRobot, ControllerMode, JointPositions
+from robot import SimRobot, ControllerMode, JointPositions, vec_to_pose
 from controller.planning.path_planner import QuinticTrajectoryGenerator
 
 # camel-franka's collision thresholds (per-joint torque [Nm], EE wrench [N/Nm]).
@@ -36,7 +36,7 @@ MOVE_DURATION = 3.0
 
 
 def ee_z(state):
-    return float(state.O_T_EE.reshape(4, 4, order="F")[2, 3])
+    return float(vec_to_pose(state.O_T_EE)[0][2])  # EE height (z of position)
 
 
 def main():

@@ -27,7 +27,9 @@ import mujoco
 import mujoco.viewer
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
-from robot import SimRobot, JointPositions, CartesianPose, Gripper
+from robot import (
+    SimRobot, JointPositions, CartesianPose, Gripper, vec_to_pose,
+)
 from robot.sim_robot import ARM_JOINTS
 from controller.planning import QuinticTrajectoryGenerator
 
@@ -50,14 +52,6 @@ def mat_to_euler(R):
     """3x3 rotation -> (roll, pitch, yaw), matching euler_to_mat."""
     sy = np.clip(-R[2, 0], -1.0, 1.0)
     return math.atan2(R[2, 1], R[2, 2]), math.asin(sy), math.atan2(R[1, 0], R[0, 0])
-
-
-def make_pose_vec(pos, R):
-    """position + 3x3 rotation -> column-major length-16 O_T_EE."""
-    T = np.eye(4)
-    T[:3, :3] = R
-    T[:3, 3] = pos
-    return T.flatten(order="F")
 
 
 class ControlGUI:
@@ -167,10 +161,10 @@ class ControlGUI:
         st = self.robot.read_once()
         for i in range(7):
             self.joint_sliders[i].set(float(np.degrees(st.q[i])))
-        T = st.O_T_EE.reshape(4, 4, order="F")
-        for name, v in zip(("x", "y", "z"), T[:3, 3]):
+        pos, R = vec_to_pose(st.O_T_EE)
+        for name, v in zip(("x", "y", "z"), pos):
             self.task_sliders[name].set(float(v) * 100.0)
-        for name, v in zip(("roll", "pitch", "yaw"), mat_to_euler(T[:3, :3])):
+        for name, v in zip(("roll", "pitch", "yaw"), mat_to_euler(R)):
             self.task_sliders[name].set(float(np.degrees(v)))
         self.gripper_slider.set(self.gripper.width() / self.gripper.max_width)  # m -> 0..1
 
@@ -267,7 +261,7 @@ class ControlGUI:
         pos = np.array([self.task_sliders[n].get() for n in ("x", "y", "z")]) / 100.0
         R = euler_to_mat(*[math.radians(self.task_sliders[n].get())
                            for n in ("roll", "pitch", "yaw")])
-        return CartesianPose(make_pose_vec(pos, R))
+        return CartesianPose.from_matrix(pos, R)
 
     def _tick(self):
         if not self.viewer.is_running():
@@ -296,10 +290,10 @@ class ControlGUI:
             for i, e in enumerate(self.joint_entries):
                 self._set_entry(e, f"{np.degrees(st.q[i]):.1f}")
         else:
-            T = st.O_T_EE.reshape(4, 4, order="F")
-            vals = dict(zip(("x", "y", "z"), T[:3, 3] * 100.0))
+            pos, R = vec_to_pose(st.O_T_EE)
+            vals = dict(zip(("x", "y", "z"), pos * 100.0))
             vals.update(zip(("roll", "pitch", "yaw"),
-                            [math.degrees(a) for a in mat_to_euler(T[:3, :3])]))
+                            [math.degrees(a) for a in mat_to_euler(R)]))
             for name, e in self.task_entries.items():
                 self._set_entry(e, f"{vals[name]:.1f}")
 
@@ -326,8 +320,7 @@ class ControlGUI:
 
     def _update_status(self):
         p = self.data.site_xpos[self.robot._ee_site]
-        J = self.robot._ik._jacobian(self.data)
-        w = float(np.sqrt(max(np.linalg.det(J @ J.T), 0.0)))
+        w = self.robot._ik.manipulability_at(self.data)
         g = self.gripper.read_once()
         msg = (f"mode={self.mode:5s}  EE=({p[0]*100:+.1f},{p[1]*100:+.1f},"
                f"{p[2]*100:+.1f})cm\n"

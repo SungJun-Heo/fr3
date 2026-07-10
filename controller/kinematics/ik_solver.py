@@ -62,6 +62,12 @@ class DLSIKSolver:
         mujoco.mj_jacSite(self.model, data, jacp, jacr, self.site)
         return np.vstack([jacp[:, self.dofs], jacr[:, self.dofs]])
 
+    @staticmethod
+    def _manip(J):
+        """Yoshikawa manipulability sqrt(det(J Jᵀ)) -- the one formula, so the
+        streaming step, the q-based check, and any live readout agree."""
+        return float(np.sqrt(max(np.linalg.det(J @ J.T), 0.0)))
+
     def velocity_step(self, data, target_pos, target_mat):
         """One DLS step toward the target using the pose already in ``data``.
 
@@ -72,18 +78,21 @@ class DLSIKSolver:
         err = self._pose_error(data, target_pos, target_mat)
         J = self._jacobian(data)
         dq = self.dls_step(err, J)
-        w = float(np.sqrt(max(np.linalg.det(J @ J.T), 0.0)))  # Yoshikawa manip.
         info = dict(pos_err=float(np.linalg.norm(err[:3])),
                     rot_err=float(np.linalg.norm(err[3:])),
-                    manipulability=w)
+                    manipulability=self._manip(J))
         return dq, info
 
     def manipulability(self, q):
-        """Yoshikawa manipulability sqrt(det(J Jᵀ)) at configuration ``q``
-        (uses the scratch, so it does not touch live data)."""
+        """Manipulability at configuration ``q`` (uses the scratch, so it does
+        not touch live data)."""
         self._fk(q)
-        J = self._jacobian(self.data)
-        return float(np.sqrt(max(np.linalg.det(J @ J.T), 0.0)))
+        return self._manip(self._jacobian(self.data))
+
+    def manipulability_at(self, data):
+        """Manipulability at the pose already in ``data`` (no FK) -- the live
+        readout path, e.g. a control loop's status line."""
+        return self._manip(self._jacobian(data))
 
     def dls_step(self, err, J):
         """The DLS increment: dq = Jᵀ (JJᵀ + λ²I)⁻¹ e (with a |dq| clamp)."""

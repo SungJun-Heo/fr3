@@ -13,15 +13,9 @@ from pathlib import Path
 import numpy as np
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
-from robot import SimRobot
+from robot import SimRobot, vec_to_pose
 from robot.sim_robot import ARM_JOINTS, EE_SITE
 from controller.kinematics import DLSIKSolver
-
-
-def ee_pose(state):
-    """(position, 3x3 rotation) from a RobotState's column-major O_T_EE."""
-    T = state.O_T_EE.reshape(4, 4, order="F")
-    return T[:3, 3].copy(), T[:3, :3].copy()
 
 
 def main():
@@ -30,7 +24,7 @@ def main():
     np.set_printoptions(precision=4, suppress=True)
 
     q_home = robot.read_once().q
-    p_home, R_home = ee_pose(robot.read_once())
+    p_home, R_home = vec_to_pose(robot.read_once().O_T_EE)
     print(f"home q     : {q_home}")
     print(f"home EE pos: {p_home}\n")
 

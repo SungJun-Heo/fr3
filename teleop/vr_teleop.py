@@ -40,7 +40,7 @@ import mujoco
 import mujoco.viewer
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
-from robot import SimRobot, JointPositions, CartesianPose, Gripper
+from robot import SimRobot, JointPositions, CartesianPose, Gripper, vec_to_pose
 from controller.planning import QuinticTrajectoryGenerator
 from teleop.vr_server import VRState, VRTeleopServer
 
@@ -51,14 +51,6 @@ SMOOTH_TAU = 0.0        # default command low-pass time constant (s); 0 = off.
                         # The sim's position servo already smooths, so this is
                         # off by default (adds latency); raise it (e.g. 0.05) if
                         # a real headset's input jitter shows through.
-
-
-def make_pose_vec(pos, R):
-    """position + 3x3 rotation -> column-major length-16 O_T_EE (libfranka)."""
-    T = np.eye(4)
-    T[:3, :3] = R
-    T[:3, 3] = pos
-    return T.flatten(order="F")
 
 
 def slerp_toward(R_cur, R_tgt, a):
@@ -145,8 +137,7 @@ class VRTeleop:
 
     def _ee_pose(self):
         """Current EE (position, rotation) from the sim."""
-        T = self.robot.read_once().O_T_EE.reshape(4, 4, order="F")
-        return T[:3, 3].copy(), T[:3, :3].copy()
+        return vec_to_pose(self.robot.read_once().O_T_EE)
 
     def _resync_cmd(self):
         """Point the commanded pose (and its filtered copy) at the current EE,
@@ -244,8 +235,8 @@ class VRTeleop:
         self._cmd_pos_filt += a * (self._cmd_pos - self._cmd_pos_filt)
         self._cmd_R_filt = slerp_toward(self._cmd_R_filt, self._cmd_R, a)
         try:
-            self.ac.writeOnce(CartesianPose(
-                make_pose_vec(self._cmd_pos_filt, self._cmd_R_filt)))
+            self.ac.writeOnce(
+                CartesianPose.from_matrix(self._cmd_pos_filt, self._cmd_R_filt))
         except RuntimeError as e:
             self.robot.automatic_error_recovery()
             mujoco.mj_step(self.model, self.data)  # hold pose, keep time moving
@@ -277,8 +268,7 @@ class VRTeleop:
         # Yoshikawa manipulability: how far from a singularity the arm is. In
         # clamp mode the arm slows smoothly as this drops (no stutter); watch it
         # dip when you steer into an extended/awkward pose.
-        J = self.robot._ik._jacobian(self.data)
-        w = float(np.sqrt(max(np.linalg.det(J @ J.T), 0.0)))
+        w = self.robot._ik.manipulability_at(self.data)
         tag = self._mode_tag(snap.connected)
         if w < 0.04:
             tag += " near-sing"

@@ -41,7 +41,10 @@ import mujoco
 # task is".
 sys.path.insert(0, str(Path(__file__).parent.parent))
 from scene import build_task, initial_state
-from robot.types import ControllerMode, Duration, JointPositions, CartesianPose
+from robot.types import (
+    ControllerMode, Duration, JointPositions, CartesianPose,
+    pose_to_vec, vec_to_pose,
+)
 from controller.kinematics import DLSIKSolver
 
 # Arm joints in kinematic order. The end-effector reference frame is the flange
@@ -146,10 +149,8 @@ class SimRobot:
     def _ee_pose(self):
         """EE pose as a column-major length-16 vector (libfranka's O_T_EE)."""
         d = self.data
-        T = np.eye(4)
-        T[:3, :3] = d.site_xmat[self._ee_site].reshape(3, 3)
-        T[:3, 3] = d.site_xpos[self._ee_site]
-        return T.flatten(order="F")  # column-major: translation at [12,13,14]
+        return pose_to_vec(d.site_xpos[self._ee_site],
+                           d.site_xmat[self._ee_site].reshape(3, 3))
 
     # --- control loop --------------------------------------------------
 
@@ -279,8 +280,8 @@ class SimRobot:
         and raise. In ``"clamp"`` mode (teleop): never fault -- hold on NaN, hold
         at the near-singularity floor (soft wall), else clip to joint limits, so
         tracking slows/holds smoothly instead of stopping or sagging."""
-        T = np.asarray(command.O_T_EE, dtype=float).reshape(4, 4, order="F")
-        dq, info = self._ik.velocity_step(self.data, T[:3, 3], T[:3, :3])
+        target_pos, target_R = vec_to_pose(command.O_T_EE)
+        dq, info = self._ik.velocity_step(self.data, target_pos, target_R)
         q_target = self.data.qpos[self._qadr] + dq
         if self._cart_safety == "clamp":
             if not np.all(np.isfinite(q_target)):

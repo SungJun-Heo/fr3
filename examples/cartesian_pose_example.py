@@ -23,20 +23,7 @@ import mujoco
 import mujoco.viewer
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
-from robot import SimRobot, CartesianPose
-
-
-def ee_pose(state):
-    T = state.O_T_EE.reshape(4, 4, order="F")
-    return T[:3, 3].copy(), T[:3, :3].copy()
-
-
-def make_pose_vec(pos, R):
-    """4x4 pose -> column-major length-16 vector (libfranka O_T_EE)."""
-    T = np.eye(4)
-    T[:3, :3] = R
-    T[:3, 3] = pos
-    return T.flatten(order="F")
+from robot import SimRobot, CartesianPose, vec_to_pose
 
 
 def stream_line(robot, target_pos, n_steps, viewer=None):
@@ -46,16 +33,16 @@ def stream_line(robot, target_pos, n_steps, viewer=None):
     trip (the caller decides whether that was expected)."""
     ac = robot.start_cartesian_pose_control()
     state, _ = ac.readOnce()
-    p_start, R = ee_pose(state)                      # keep orientation fixed
+    p_start, R = vec_to_pose(state.O_T_EE)           # keep orientation fixed
     track = []
     for i in range(1, n_steps + 1):
         s = i / n_steps
         p_cmd = p_start + s * (target_pos - p_start)  # straight line
-        cmd = CartesianPose(make_pose_vec(p_cmd, R))
+        cmd = CartesianPose.from_matrix(p_cmd, R)
         if i == n_steps:
             cmd.motion_finished = True
         ac.writeOnce(cmd)                             # per-tick DLS IK + safety
-        p_act, _ = ee_pose(robot.read_once())
+        p_act, _ = vec_to_pose(robot.read_once().O_T_EE)
         track.append((p_cmd, p_act))
         if viewer is not None:
             viewer.sync()
@@ -72,7 +59,7 @@ def main():
     # ---- Demo 1: safe straight line, measure tracking --------------------
     robot = SimRobot("empty")
     viewer = mujoco.viewer.launch_passive(robot.model, robot.data) if args.view else None
-    p0, _ = ee_pose(robot.read_once())
+    p0, _ = vec_to_pose(robot.read_once().O_T_EE)
     target = p0 + np.array([0.0, 0.20, 0.0])          # 20 cm sideways in +y
     print(f"[demo 1] streaming a straight line: EE {p0} -> {target}")
     track = stream_line(robot, target, n_steps=1500, viewer=viewer)
@@ -88,14 +75,14 @@ def main():
 
     # ---- Demo 2: reach too far -> safety trip ----------------------------
     robot = SimRobot("empty")
-    p0, _ = ee_pose(robot.read_once())
+    p0, _ = vec_to_pose(robot.read_once().O_T_EE)
     far = p0 + np.array([0.55, 0.0, -0.15])           # far forward: forces extension
     print(f"\n[demo 2] streaming toward an unreachable/extended target: {far}")
     try:
         stream_line(robot, far, n_steps=1500)
         print("  [WARN] never tripped -- reached the far target")
     except RuntimeError as e:
-        p_now, _ = ee_pose(robot.read_once())
+        p_now, _ = vec_to_pose(robot.read_once().O_T_EE)
         print(f"  [SAFETY TRIP] {e}")
         print(f"  stopped at EE      : {p_now}")
         robot.automatic_error_recovery()

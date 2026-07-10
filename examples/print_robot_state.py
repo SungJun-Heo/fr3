@@ -10,7 +10,7 @@ from pathlib import Path
 import numpy as np
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
-from robot import SimRobot
+from robot import SimRobot, vec_to_pose
 
 
 def main():
@@ -23,11 +23,10 @@ def main():
     print(f"q      : {s.q}")
     print(f"dq     : {s.dq}")
     print(f"tau_J  : {s.tau_J}")
-    # O_T_EE is column-major; reshape back for a readable 4x4 and pull position.
-    T = s.O_T_EE.reshape(4, 4, order="F")
-    print(f"EE pos : {T[:3, 3]}")
+    pos, _ = vec_to_pose(s.O_T_EE)  # column-major O_T_EE -> (position, rotation)
+    print(f"EE pos : {pos}")
     print("O_T_EE (4x4):")
-    print(T)
+    print(s.O_T_EE.reshape(4, 4, order="F"))  # raw datatype, shown as a matrix
 
 
 if __name__ == "__main__":

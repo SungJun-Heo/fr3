@@ -22,26 +22,12 @@ import mujoco
 import mujoco.viewer
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
-from robot import SimRobot, JointPositions
+from robot import SimRobot, JointPositions, vec_to_pose
+from examples._common import add_marker
 
 N_STEPS = 3000
 VEL_AMP = 1.0       # rad/s, null-space velocity amplitude
 OMEGA = np.pi       # rad/s, oscillation
-
-
-def ee_pose(state):
-    T = state.O_T_EE.reshape(4, 4, order="F")
-    return T[:3, 3].copy(), T[:3, :3].copy()
-
-
-def add_marker(scene, pos, rgba, size=0.015):
-    if scene.ngeom >= scene.maxgeom:
-        return
-    mujoco.mjv_initGeom(
-        scene.geoms[scene.ngeom], mujoco.mjtGeom.mjGEOM_SPHERE,
-        np.array([size, 0.0, 0.0]), np.asarray(pos, float),
-        np.eye(3).flatten(), np.asarray(rgba, np.float32))
-    scene.ngeom += 1
 
 
 def main():
@@ -51,12 +37,12 @@ def main():
 
     robot = SimRobot("empty")
     ik = robot._ik
-    home_pos, home_R = ee_pose(robot.read_once())
+    home_pos, home_R = vec_to_pose(robot.read_once().O_T_EE)
     dt = robot.model.opt.timestep
 
     viewer = mujoco.viewer.launch_passive(robot.model, robot.data) if args.view else None
     if viewer is not None:
-        add_marker(viewer.user_scn, home_pos, [0.1, 0.9, 0.1, 1.0])  # the fixed EE goal
+        add_marker(viewer.user_scn, home_pos, [0.1, 0.9, 0.1, 1.0], size=0.015)  # the fixed EE goal
 
     ac = robot.start_joint_position_control()
     d = np.ones(7)          # a driving vector; its null-space component is used
@@ -79,7 +65,7 @@ def main():
         t += dt
 
         post = robot.read_once()
-        ee_err[i] = np.linalg.norm(ee_pose(post)[0] - home_pos)
+        ee_err[i] = np.linalg.norm(vec_to_pose(post.O_T_EE)[0] - home_pos)
         q_hist[i] = post.q
         if viewer is not None:
             viewer.sync()

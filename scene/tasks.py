@@ -8,9 +8,10 @@ Add a new task by adding one entry to ``TASKS``; reuse object kinds from
 surface is at z = 0, so a body sits flush when ``pos_z == its half-height``.
 """
 
-# Base scenes: name -> scene file (relative to this repo root).
+# Base scenes: name -> scene file (relative to this repo root). SimRobot needs
+# the Franka Hand (it reads the ``hand`` body for the collision reflex), so a
+# base must include the gripper.
 BASES = {
-    "fr3": "models/fr3/scene.xml",                              # arm only, no table
     "fr3_with_gripper": "models/fr3_with_gripper/scene.xml",    # gripper + table
 }
 

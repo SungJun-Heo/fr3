@@ -9,11 +9,15 @@ as a column-major 4x4), a different backend underneath.
 """
 
 from robot.sim_robot import SimRobot, RobotState, ActiveControl
-from robot.types import ControllerMode, JointPositions, CartesianPose, Duration
+from robot.types import (
+    ControllerMode, JointPositions, CartesianPose, Duration,
+    pose_to_vec, vec_to_pose,
+)
 from robot.gripper import Gripper, GripperState
 
 __all__ = [
     "SimRobot", "RobotState", "ActiveControl",
     "ControllerMode", "JointPositions", "CartesianPose", "Duration",
+    "pose_to_vec", "vec_to_pose",
     "Gripper", "GripperState",
 ]
