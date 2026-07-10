@@ -35,6 +35,7 @@ from dataclasses import dataclass
 import json
 import socket
 import threading
+import time
 
 import numpy as np
 
@@ -115,7 +116,8 @@ class VRSnapshot:
     home: bool
     connected: bool
     tracking: bool
-    frames: int  # total frames published (for measuring input rate)
+    frames: int    # total frames published (for measuring input rate)
+    stamp: float   # perf_counter when this frame was published (for latency)
 
 
 class VRState:
@@ -135,6 +137,7 @@ class VRState:
         self._connected = False
         self._tracking = False
         self._frames = 0  # incremented each publish; lets the loop measure input fps
+        self._stamp = 0.0  # perf_counter of the last publish; lets it measure latency
 
     def publish(self, hand_tf, grip, trigger, home, tracking):
         with self._lock:
@@ -144,6 +147,7 @@ class VRState:
             self._home = bool(home)
             self._tracking = bool(tracking)
             self._frames += 1
+            self._stamp = time.perf_counter()
 
     def set_connected(self, flag):
         """Flag (dis)connection. On disconnect we also clear ``tracking`` so a
@@ -157,7 +161,7 @@ class VRState:
         with self._lock:
             return VRSnapshot(self._hand_tf.copy(), self._grip, self._trigger,
                               self._home, self._connected, self._tracking,
-                              self._frames)
+                              self._frames, self._stamp)
 
 
 class VRTeleopServer:

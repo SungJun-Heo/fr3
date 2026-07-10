@@ -86,7 +86,9 @@ def slerp_toward(R_cur, R_tgt, a):
 
 class VRTeleop:
     def __init__(self, task="empty", hand="right", host="0.0.0.0", port=8081,
-                 position_scale=1.0, smooth_tau=SMOOTH_TAU, view=True):
+                 position_scale=1.0, smooth_tau=SMOOTH_TAU, view=True,
+                 show_stats=True):
+        self.show_stats = show_stats
         self.robot = SimRobot(task)
         self.model, self.data = self.robot.model, self.robot.data
         self.gripper = Gripper(self.robot)
@@ -311,8 +313,9 @@ class VRTeleop:
 
                 now = time.perf_counter()
                 if now - stat_t0 >= 1.0:
-                    self._print_stats(now - stat_t0, stat_ticks, stat_work,
-                                      stat_frames, sim_per_tick)
+                    if self.show_stats:
+                        self._print_stats(now - stat_t0, stat_ticks, stat_work,
+                                          stat_frames, sim_per_tick)
                     stat_t0, stat_ticks, stat_work = now, 0, 0.0
                     stat_frames = self.state.snapshot().frames
 
