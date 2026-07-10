@@ -29,7 +29,7 @@ def run_vr(args):
     from teleop import VRTeleop
     VRTeleop(task=args.task, hand=args.hand, host=args.host, port=args.port,
              position_scale=args.scale, smooth_tau=args.smooth_tau,
-             view=not args.no_view).run()
+             view=not args.no_view, show_stats=args.stats).run()
 
 
 MODES = {
@@ -55,6 +55,8 @@ def main():
                         help="[vr] hand->EE position scale")
     parser.add_argument("--smooth-tau", type=float, default=0.0,
                         help="[vr] command low-pass time constant (s); 0 disables")
+    parser.add_argument("--stats", action="store_true",
+                        help="[vr] print the 1 Hz loop/latency stats line")
     parser.add_argument("--no-view", action="store_true",
                         help="[vr] run headless (no viewer)")
     args = parser.parse_args()

@@ -342,11 +342,13 @@ def main():
                         help="hand->EE position scale")
     parser.add_argument("--smooth-tau", type=float, default=SMOOTH_TAU,
                         help="command low-pass time constant (s); 0 disables")
+    parser.add_argument("--stats", action="store_true",
+                        help="print the 1 Hz loop/latency stats line")
     parser.add_argument("--no-view", action="store_true", help="run headless")
     args = parser.parse_args()
     VRTeleop(task=args.task, hand=args.hand, host=args.host, port=args.port,
              position_scale=args.scale, smooth_tau=args.smooth_tau,
-             view=not args.no_view).run()
+             view=not args.no_view, show_stats=args.stats).run()
 
 
 if __name__ == "__main__":
