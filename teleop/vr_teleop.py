@@ -43,6 +43,7 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 from robot import SimRobot, JointPositions, CartesianPose, Gripper, vec_to_pose
 from controller.planning import QuinticTrajectoryGenerator
 from teleop.vr_server import VRState, VRTeleopServer
+from viz import add_frame
 
 TICK_MS = 20            # control/UI tick period (matches control_gui)
 HOME_DURATION = 2.0     # seconds for the HOME motion
@@ -79,8 +80,9 @@ def slerp_toward(R_cur, R_tgt, a):
 class VRTeleop:
     def __init__(self, task="empty", hand="right", host="0.0.0.0", port=8081,
                  position_scale=1.0, smooth_tau=SMOOTH_TAU, view=True,
-                 show_stats=True):
+                 show_stats=True, show_markers=True):
         self.show_stats = show_stats
+        self.show_markers = show_markers   # draw commanded vs actual EE in viewer
         self.task_name = task
         self.robot = SimRobot(task)
         self.model, self.data = self.robot.model, self.robot.data
@@ -145,6 +147,24 @@ class VRTeleop:
         self._cmd_pos, self._cmd_R = self._ee_pose()
         self._cmd_pos_filt = self._cmd_pos.copy()
         self._cmd_R_filt = self._cmd_R.copy()
+
+    def _draw_tracking(self):
+        """Overlay the VR-commanded pose vs the actual EE pose in the viewer.
+
+        The command handed to ``writeOnce`` (``_cmd_*_filt``) is drawn as a
+        translucent 'ghost' frame; the arm's actual EE pose as a solid one. When
+        tracking is tight the solid frame sits inside the ghost; when the arm
+        lags (servo/IK delay, or a soft-wall hold near a singularity) the solid
+        frame trails it -- so you can *see* how well the arm follows the command.
+        Redrawn from scratch each tick."""
+        if self.viewer is None or not self.show_markers:
+            return
+        scn = self.viewer.user_scn
+        scn.ngeom = 0
+        add_frame(scn, self._cmd_pos_filt, self._cmd_R_filt, length=0.12, alpha=0.35)
+        ee_pos = self.data.site_xpos[self.robot._ee_site]
+        ee_R = self.data.site_xmat[self.robot._ee_site].reshape(3, 3)
+        add_frame(scn, ee_pos, ee_R, length=0.09, alpha=1.0)
 
     # -- clutch (the ported set_vr_trajectory) -------------------------
 
@@ -323,6 +343,7 @@ class VRTeleop:
         t0 = time.perf_counter()
         self._tick()
         if self.viewer is not None:
+            self._draw_tracking()
             self.viewer.sync()
         self._gui_update_status()
         delay = max(1, int(round(TICK_MS - (time.perf_counter() - t0) * 1000)))
@@ -353,11 +374,15 @@ class VRTeleop:
 
     def _gui_update_status(self):
         snap = self.state.snapshot()
-        p = self.data.site_xpos[self.robot._ee_site]
+        ee = self.data.site_xpos[self.robot._ee_site]
+        cmd = self._cmd_pos_filt                       # pose handed to writeOnce
+        err_mm = float(np.linalg.norm(cmd - ee)) * 1000.0  # tracking error
         g = self.gripper.read_once()
         conn = "connected" if snap.connected else "waiting for VR client"
         msg = (f"{conn}  |  {self._mode_tag(snap.connected)}\n"
-               f"EE=({p[0]*100:+.1f},{p[1]*100:+.1f},{p[2]*100:+.1f})cm   "
+               f"cmd=({cmd[0]*100:+.1f},{cmd[1]*100:+.1f},{cmd[2]*100:+.1f})cm\n"
+               f"act=({ee[0]*100:+.1f},{ee[1]*100:+.1f},{ee[2]*100:+.1f})cm  "
+               f"err={err_mm:4.0f}mm\n"
                f"grip={g.width / g.max_width:.2f}"
                f"{'  [GRASP]' if g.is_grasped else ''}")
         self._gui_status.config(text=msg)
@@ -392,6 +417,7 @@ class VRTeleop:
                 t0 = time.perf_counter()
                 self._tick()
                 if self.viewer is not None:
+                    self._draw_tracking()
                     self.viewer.sync()
                 if on_tick is not None:
                     on_tick(self)
@@ -434,10 +460,13 @@ def main():
     parser.add_argument("--gui", action="store_true",
                         help="show the reset-button GUI")
     parser.add_argument("--no-view", action="store_true", help="run headless")
+    parser.add_argument("--no-markers", action="store_true",
+                        help="don't draw the commanded vs actual EE frames")
     args = parser.parse_args()
     VRTeleop(task=args.task, hand=args.hand, host=args.host, port=args.port,
              position_scale=args.scale, smooth_tau=args.smooth_tau,
-             view=not args.no_view, show_stats=args.stats).run(gui=args.gui)
+             view=not args.no_view, show_stats=args.stats,
+             show_markers=not args.no_markers).run(gui=args.gui)
 
 
 if __name__ == "__main__":

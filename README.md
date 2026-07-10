@@ -38,9 +38,15 @@ python main.py --mode vr &
 python -m teleop.mock_vr_client
 ```
 
+In VR mode the viewer overlays the **commanded** EE pose (translucent frame) and
+the **actual** EE pose (solid frame) so you can see how well the arm tracks the
+command; the reset panel also prints the position error in mm. `--no-markers`
+hides the frames.
+
 `--task` picks the scene for either mode: `empty` (default), `pick_cube`,
 `stack_blocks`, `bin_picking`. VR flags: `--hand`, `--host/--port`, `--scale`,
-`--smooth-tau`, `--stats`, `--no-gui`, `--no-view` (see `python main.py -h`).
+`--smooth-tau`, `--stats`, `--no-markers`, `--no-gui`, `--no-view` (see `python
+main.py -h`).
 
 ## Layout
 

@@ -32,7 +32,8 @@ def run_vr(args):
     from teleop import VRTeleop
     VRTeleop(task=args.task, hand=args.hand, host=args.host, port=args.port,
              position_scale=args.scale, smooth_tau=args.smooth_tau,
-             view=not args.no_view, show_stats=args.stats).run(gui=not args.no_gui)
+             view=not args.no_view, show_stats=args.stats,
+             show_markers=not args.no_markers).run(gui=not args.no_gui)
 
 
 MODES = {
@@ -60,6 +61,8 @@ def main():
                         help="[vr] command low-pass time constant (s); 0 disables")
     parser.add_argument("--stats", action="store_true",
                         help="[vr] print the 1 Hz loop/latency stats line")
+    parser.add_argument("--no-markers", action="store_true",
+                        help="[vr] don't draw the commanded vs actual EE frames")
     parser.add_argument("--no-gui", action="store_true",
                         help="[vr] don't show the reset-button GUI")
     parser.add_argument("--no-view", action="store_true",

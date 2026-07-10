@@ -23,7 +23,7 @@ import mujoco.viewer
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 from robot import SimRobot, JointPositions, vec_to_pose
-from examples._common import add_marker
+from viz import add_marker
 
 N_STEPS = 3000
 VEL_AMP = 1.0       # rad/s, null-space velocity amplitude
