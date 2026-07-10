@@ -80,7 +80,11 @@ class VRTeleop:
         self._cmd_pos = p
         self._cmd_R = R
 
-        self._trip = None        # safety-trip message, or None
+        # Soft-wall state: True on the ticks a near-singularity / joint-limit
+        # holds the arm. Unlike a latched fault it clears itself the moment the
+        # hand steers back into a reachable pose (see _control_substep).
+        self._blocked = False
+        self._block_reason = ""
         self._home_traj = None   # active quintic while HOME runs
         self._home_t = 0.0
         self._prev_home_btn = False
@@ -115,8 +119,10 @@ class VRTeleop:
         latched, and no HOME motion is running. On the rising edge we capture
         the anchors; while held we apply the relative position/rotation delta;
         on release we simply stop updating, leaving the last command frozen."""
+        # Note: a soft-wall block does NOT disengage the clutch -- we keep the
+        # anchor so that steering the hand back out resumes tracking at once.
         engaged = (snap.tracking and snap.grip > GRIP_ENGAGE
-                   and self._trip is None and self._home_traj is None)
+                   and self._home_traj is None)
 
         if engaged and not self._engaged:
             self._vr_anchor = snap.hand_tf.copy()
@@ -133,9 +139,9 @@ class VRTeleop:
     # -- HOME / recover ------------------------------------------------
 
     def _go_home(self):
-        """Clear any trip and start a smooth quintic motion to the HOME key."""
+        """Clear any block and start a smooth quintic motion to the HOME key."""
         self.robot.automatic_error_recovery()
-        self._trip = None
+        self._blocked = False
         home = self.model.key_qpos[0][:7].copy()
         traj = QuinticTrajectoryGenerator()
         traj.InitTrajectory(self.robot.read_once().q, home, 0.0, HOME_DURATION)
@@ -158,18 +164,21 @@ class VRTeleop:
 
         self._update_clutch(snap)
 
+        self._blocked = False
         for _ in range(self.substeps):
-            try:
-                self._control_substep()
-            except RuntimeError as e:
-                self._trip = str(e)
+            self._control_substep()
 
     def _control_substep(self):
-        """One sim step: hold on a trip, stream HOME if running, else track the
-        commanded (clutch) pose through the existing Cartesian IK+safety path."""
-        if self._trip is not None:
-            mujoco.mj_step(self.model, self.data)
-            return
+        """One sim step: stream HOME if running, else track the commanded
+        (clutch) pose through the existing Cartesian IK+safety path.
+
+        Near-singularity / joint-limit trips are handled as a *soft wall*: the
+        Cartesian safety raises, we clear it right away and just hold this step.
+        The arm therefore refuses to push deeper into the singular region but
+        resumes the instant the hand steers back to a reachable pose -- no HOME
+        needed. (Latching the trip is what made low-manipulability teleop
+        stutter to a dead stop.) SimRobot itself still latches, so scripted /
+        VLA control keeps the faithful fault behaviour; only teleop softens it."""
         if self._home_traj is not None:
             self._home_t += self.model.opt.timestep
             q = self._home_traj.getPositionTrajectory(self._home_t)
@@ -178,15 +187,21 @@ class VRTeleop:
                 self._home_traj = None
                 self._resync_cmd()  # resume teleop from HOME without a jump
             return
-        self.ac.writeOnce(CartesianPose(make_pose_vec(self._cmd_pos, self._cmd_R)))
+        try:
+            self.ac.writeOnce(CartesianPose(make_pose_vec(self._cmd_pos, self._cmd_R)))
+        except RuntimeError as e:
+            self.robot.automatic_error_recovery()
+            mujoco.mj_step(self.model, self.data)  # hold pose, keep time moving
+            self._blocked = True
+            self._block_reason = str(e)
 
     def _mode_tag(self, connected):
         if not connected:
             return "no client"
-        if self._trip is not None:
-            return "TRIP"
         if self._home_traj is not None:
             return "HOME"
+        if self._blocked:
+            return "singular/limit (hold)"
         return "engaged" if self._engaged else "idle"
 
     def _print_stats(self, dt, ticks, work, prev_frames, sim_per_tick):
