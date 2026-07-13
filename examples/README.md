@@ -35,7 +35,10 @@ python examples/<name>.py [--view]
 | `control_gui.py` | Tkinter hand-control panel (joint / task space + gripper). Also `python main.py --mode gui`. |
 | `vr_monitor.py` | Taps the real VR teleop loop and reports input fps / frame age / EE lag. Needs a VR client (or `python -m teleop.mock_vr_client`). |
 
-Viewer-overlay helpers (`add_marker`, `add_frame`) live in the `overlay/`
-package, shared with `teleop`. The pose/command conventions — `pose_to_vec` /
+Examples that open a viewer and have a Cartesian target draw **commanded
+(green) vs actual EE (red)** with the shared `overlay` helpers — one convention
+across the set (`overlay.TARGET_RGBA` / `overlay.ACTUAL_RGBA`). Viewer-overlay
+helpers (`add_marker`, `add_frame`, the colors) live in the `overlay/` package,
+shared with `teleop`. The pose/command conventions — `pose_to_vec` /
 `vec_to_pose` / `CartesianPose.from_matrix` — live in the `robot` package, since
 they're library concerns, not example glue.

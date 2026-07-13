@@ -8,6 +8,11 @@ Pure visualization: nothing here touches robot state or the physics.
 import numpy as np
 import mujoco
 
+# Convention colors for target-vs-actual overlays, shared so every example (and
+# any tool) agrees: green = commanded / target, red = actual EE.
+TARGET_RGBA = (0.1, 0.9, 0.1, 1.0)
+ACTUAL_RGBA = (0.9, 0.1, 0.1, 1.0)
+
 
 def add_marker(scene, pos, rgba, size=0.006):
     """Add a small sphere to a viewer's user scene (skipped if it's full).

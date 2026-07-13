@@ -21,7 +21,7 @@ import mujoco.viewer
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 from robot import SimRobot, CartesianPose, vec_to_pose
-from overlay import add_marker
+from overlay import add_marker, TARGET_RGBA, ACTUAL_RGBA
 
 N_STEPS = 4000      # points along the path (slower = tighter servo tracking)
 MARKER_EVERY = 50   # draw a marker every N steps
@@ -65,7 +65,7 @@ def main():
     viewer = mujoco.viewer.launch_passive(robot.model, robot.data) if args.view else None
     if viewer is not None:
         for p in target[::MARKER_EVERY]:  # draw the whole target path up front
-            add_marker(viewer.user_scn, p, [0.1, 0.9, 0.1, 1.0])
+            add_marker(viewer.user_scn, p, TARGET_RGBA)
 
     ac = robot.start_cartesian_pose_control()
     errs = np.empty(n)
@@ -75,7 +75,7 @@ def main():
         errs[i] = np.linalg.norm(actual - target[i])
         if viewer is not None:
             if i % MARKER_EVERY == 0:
-                add_marker(viewer.user_scn, actual, [0.9, 0.1, 0.1, 1.0])
+                add_marker(viewer.user_scn, actual, ACTUAL_RGBA)
             viewer.sync()
             time.sleep(robot.model.opt.timestep)
 

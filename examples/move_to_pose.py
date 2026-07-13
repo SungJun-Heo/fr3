@@ -25,6 +25,7 @@ from robot import SimRobot, vec_to_pose
 from robot.sim_robot import ARM_JOINTS, EE_SITE
 from controller.kinematics import DLSIKSolver
 from controller.control import move_to_joint
+from overlay import add_marker, TARGET_RGBA
 
 TARGET_OFFSET = np.array([0.15, 0.10, -0.15])  # from the home EE position
 MOVE_DURATION = 3.0
@@ -55,6 +56,8 @@ def main():
 
     # 2) reuse the joint-space quintic move to the IK goal
     viewer = mujoco.viewer.launch_passive(robot.model, robot.data) if args.view else None
+    if viewer is not None:
+        add_marker(viewer.user_scn, target_pos, TARGET_RGBA, size=0.015)  # commanded pose
     move_to_joint(robot, q_goal, MOVE_DURATION, viewer)
 
     # 3) verify: did the EE actually reach the commanded Cartesian pose?

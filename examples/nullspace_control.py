@@ -23,7 +23,7 @@ import mujoco.viewer
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 from robot import SimRobot, JointPositions, vec_to_pose
-from overlay import add_marker
+from overlay import add_marker, TARGET_RGBA
 
 N_STEPS = 3000
 VEL_AMP = 1.0       # rad/s, null-space velocity amplitude
@@ -42,7 +42,7 @@ def main():
 
     viewer = mujoco.viewer.launch_passive(robot.model, robot.data) if args.view else None
     if viewer is not None:
-        add_marker(viewer.user_scn, home_pos, [0.1, 0.9, 0.1, 1.0], size=0.015)  # the fixed EE goal
+        add_marker(viewer.user_scn, home_pos, TARGET_RGBA, size=0.015)  # the fixed EE goal
 
     ac = robot.start_joint_position_control()
     d = np.ones(7)          # a driving vector; its null-space component is used

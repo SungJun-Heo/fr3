@@ -6,6 +6,6 @@ none of them) and below none, so both a library package like ``teleop`` and a
 downstream example can use it without a layering inversion.
 """
 
-from overlay.draw import add_marker, add_frame
+from overlay.draw import add_marker, add_frame, TARGET_RGBA, ACTUAL_RGBA
 
-__all__ = ["add_marker", "add_frame"]
+__all__ = ["add_marker", "add_frame", "TARGET_RGBA", "ACTUAL_RGBA"]
