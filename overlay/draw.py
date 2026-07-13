@@ -1,10 +1,8 @@
-"""Viewer-overlay debug drawing, shared by ``teleop`` and the examples.
+"""Viewer-overlay geoms for a passive MuJoCo viewer.
 
-Helpers that push geoms into a passive viewer's ``user_scn`` so you can *see*
-what the controller is doing -- path markers, and pose frames for comparing a
-commanded (target) pose against the actual one. Pure visualization: nothing here
-touches robot state or the physics, so it sits above every package and below
-none.
+Push markers and pose frames into a viewer's ``user_scn`` so you can *see* what
+the controller is doing -- path points, and a commanded pose vs the actual one.
+Pure visualization: nothing here touches robot state or the physics.
 """
 
 import numpy as np

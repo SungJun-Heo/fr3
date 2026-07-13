@@ -43,7 +43,7 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 from robot import SimRobot, JointPositions, CartesianPose, Gripper, vec_to_pose
 from controller.planning import QuinticTrajectoryGenerator
 from teleop.vr_server import VRState, VRTeleopServer
-from viz import add_frame
+from overlay import add_frame
 
 TICK_MS = 20            # control/UI tick period (matches control_gui)
 HOME_DURATION = 2.0     # seconds for the HOME motion

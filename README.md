@@ -56,6 +56,7 @@ main.py -h`).
 | `controller/` | `kinematics/` (DLS IK solver), `planning/` (quintic trajectories), `control/` (`move_to_joint`). Mirrors `camel-franka/controller/`. |
 | `scene/` | Task registry + object library + an `mjSpec` builder. One source of truth for "what a task is", shared by the viewer and `SimRobot`. |
 | `teleop/` | VR teleop: Quest → TCP JSON → relative-clutch Cartesian control. Server, control loop, and a headless-friendly mock client. |
+| `overlay/` | Viewer-overlay debug drawing (markers, pose frames). Neutral layer shared by `teleop` and `examples`. |
 | `models/` | `fr3_with_gripper` scene (arm + Franka Hand + table). |
 | `examples/` | Tutorial scripts, one per build step — see [examples/README.md](examples/README.md). |
 | `docs/` | Study notes (e.g. the Cartesian-IK control derivation). |

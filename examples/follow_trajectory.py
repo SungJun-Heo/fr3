@@ -21,7 +21,7 @@ import mujoco.viewer
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 from robot import SimRobot, CartesianPose, vec_to_pose
-from viz import add_marker
+from overlay import add_marker
 
 N_STEPS = 4000      # points along the path (slower = tighter servo tracking)
 MARKER_EVERY = 50   # draw a marker every N steps
