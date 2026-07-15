@@ -5,8 +5,8 @@ A Unity (Meta Quest) app streams one JSON object per line over TCP: headset and
 per-hand pose (position + quaternion), the index/grip triggers, thumbstick, and
 A/B/X/Y buttons. This server reads ONE hand (single-arm FR3), converts its pose
 from the Meta coordinate frame to the robot/MuJoCo base frame, and publishes the
-result to a ``VRState`` that the teleop control loop reads (see
-``teleop/vr_teleop.py``).
+result to a ``VRState`` that the teleop control loop reads (the GUI's "vr" mode
+via ``teleop/clutch.py``).
 
 Why this is a near-copy of RBY1 but smaller:
   * RBY1 is dual-arm and routes VR into a ``SharedMemory`` object consumed by a

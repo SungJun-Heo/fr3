@@ -28,12 +28,17 @@ python examples/<name>.py [--view]
 | 10 | `nullspace_control.py` | Redundant DOF: reconfigure the arm while the EE stays fixed | kinematics |
 | 11 | `move_gripper.py` | Gripper API: homing / move / grasp, `is_grasped` detection | `robot/` gripper |
 
-## Apps / tools
+## App
 
-| Script | What it is |
-|--------|-----------|
-| `control_gui.py` | Tkinter hand-control panel (joint / task space + gripper). Also `python main.py --mode gui`. |
-| `vr_monitor.py` | Taps the real VR teleop loop and reports input fps / frame age / EE lag. Needs a VR client (or `python -m teleop.mock_vr_client`). |
+The interactive control GUI is not an example — it lives in the `gui/` package
+and launches from the repo root:
+
+```bash
+python main.py [--task pick_cube]   # unified panel: JOINT / TASK / VR modes + gripper
+```
+
+It merges what used to be the `control_gui` and VR-teleop panels into one window;
+`ControlSession` (in `gui/session.py`) is the UI-agnostic control core.
 
 Examples that open a viewer and have a Cartesian target draw **commanded
 (green) vs actual EE (red)** with the shared `overlay` helpers — one convention

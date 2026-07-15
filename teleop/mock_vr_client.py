@@ -2,8 +2,9 @@
 
 Connects to ``VRTeleopServer`` and streams the same newline-delimited JSON a
 Unity app would, driving the right hand through a scripted motion so you can see
-the FR3 follow. It is both a manual sanity tool (run it in a second terminal
-against ``python main.py --mode vr``) and the input side of the end-to-end test.
+the FR3 follow. It is both a manual sanity tool (run ``python main.py``, select
+the "VR" mode, then run this in a second terminal) and the input side of the
+end-to-end test.
 
 Timeline (default): a settle phase with the clutch released (robot must stay
 put), then the grip is held and the hand traces a circle in the Meta y/z plane

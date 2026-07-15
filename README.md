@@ -26,27 +26,25 @@ conda create -n fr3_sim python=3.11
 conda activate fr3_sim
 pip install mujoco numpy          # tkinter (stdlib) is needed for the GUIs
 
-# 3. run
-python main.py --mode gui         # hand-control GUI (joint / task space + gripper)
-python main.py --mode vr          # VR teleop (Meta Quest over TCP) — default mode
+# 3. run — the unified control GUI (joint / task / VR teleop in one window)
+python main.py
 ```
 
-No headset? Drive the VR pipeline with the mock client:
+Pick the control mode in the panel: **JOINT** (7 angle sliders), **TASK** (EE-pose
+sliders + DLS IK), or **VR** (Meta Quest over TCP). No headset? Select **VR** and
+drive the pipeline with the mock client:
 
 ```bash
-python main.py --mode vr &
+python main.py &
 python -m teleop.mock_vr_client
 ```
 
-In VR mode the viewer overlays the **commanded** EE pose (translucent frame) and
-the **actual** EE pose (solid frame) so you can see how well the arm tracks the
-command; the reset panel also prints the position error in mm. `--no-markers`
-hides the frames.
-
-`--task` picks the scene for either mode: `empty` (default), `pick_cube`,
-`stack_blocks`, `bin_picking`. VR flags: `--hand`, `--host/--port`, `--scale`,
-`--smooth-tau`, `--stats`, `--no-markers`, `--no-gui`, `--no-view` (see `python
-main.py -h`).
+The settings row adjusts everything at runtime — the **task/scene** (`empty`,
+`pick_cube`, `stack_blocks`, `bin_picking`), the VR position **scale**, the VR
+**smooth-tau**, and a **markers** toggle for the overlay. The viewer overlays the
+**commanded** EE pose (translucent frame) vs the **actual** EE pose (solid frame)
+so you can see how well the arm tracks (in TASK / VR modes); the status line also
+shows the tracking error in mm.
 
 ## Layout
 
@@ -55,7 +53,8 @@ main.py -h`).
 | `robot/` | `SimRobot` — the `pylibfranka` mirror: state read, joint + Cartesian control, safety lifecycle, collision reflex. `Gripper`. `types.py` — command types + the `O_T_EE` pose convention. |
 | `controller/` | `kinematics/` (DLS IK solver), `planning/` (quintic trajectories), `control/` (`move_to_joint`). Mirrors `camel-franka/controller/`. |
 | `scene/` | Task registry + object library + an `mjSpec` builder. One source of truth for "what a task is", shared by the viewer and `SimRobot`. |
-| `teleop/` | VR teleop: Quest → TCP JSON → relative-clutch Cartesian control. Server, control loop, and a headless-friendly mock client. |
+| `gui/` | The unified control GUI. `ControlSession` (UI-agnostic tick loop: joint / task / VR modes, HOME, reset, gripper, overlay, telemetry) + `UnifiedGUI` (the Tkinter panel). |
+| `teleop/` | VR input: Quest → TCP JSON → relative-clutch EE mapping. Server (`vr_server`), the clutch mechanism (`clutch`), and a headless-friendly mock client. The GUI's "vr" mode drives it. |
 | `overlay/` | Viewer-overlay debug drawing (markers, pose frames). Neutral layer shared by `teleop` and `examples`. |
 | `models/` | `fr3_with_gripper` scene (arm + Franka Hand + table). |
 | `examples/` | Tutorial scripts, one per build step — see [examples/README.md](examples/README.md). |
@@ -100,7 +99,8 @@ home:
 
 **Working:** state read · joint-position control · quintic moves · collision
 reflex · DLS IK · goto-pose · streaming Cartesian control · null-space demo ·
-gripper (force-limited grasp vs position-only move) · hand-control GUI · VR teleop.
+gripper (force-limited grasp vs position-only move) · unified control GUI
+(joint / task / VR teleop in one window).
 
 **Next:** a VLA runner (observation → policy → `CartesianPose` stream), and IK
 quality work (null-space toward a reference posture + LPF smoothing, per the
