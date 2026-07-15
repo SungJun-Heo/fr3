@@ -7,7 +7,9 @@ Opens the MuJoCo passive viewer plus a control panel with a mode selector:
     its singularity / joint-limit / collision guards are live (trips on overreach;
     press Recover or HOME).
   * VR    -- a Meta-Quest controller drives the arm over TCP (relative clutch);
-    the sliders are idle and the grip/trigger/B-button do the work.
+    the sliders are idle and the buttons do the work: grip = clutch, trigger =
+    gripper, A = REC/PAUSE, B = HOME (teleop hand); X = Save, Y = reset-all +
+    randomize (free hand).
 
 Execute runs a smooth quintic move to the slider targets (JOINT: the angles;
 TASK: IK for the EE pose). HOME / Recover / Reset objects / Reset ALL are always
@@ -106,6 +108,11 @@ class UnifiedGUI:
         self.collect_config = CollectionConfig()   # shared by the Collector + counter
         self._last_saved = None
         self._last_collect_state = "idle"   # idle / rec / paused (for UI resync)
+        # Rising-edge state for the VR face buttons routed to GUI actions
+        # (A->REC/PAUSE, X->Save, Y->reset-all+randomize; B->HOME is in session).
+        self._prev_record_btn = False
+        self._prev_save_btn = False
+        self._prev_reset_btn = False
         self.player = EpisodePlayer(self.session)  # re-simulation episode replay
         self._replaying = False   # GUI replay mode (distinct from player's cursor)
         self._build_ui()
@@ -670,6 +677,22 @@ class UnifiedGUI:
             self._update_status()
             self.root.after(delay, self._tick)
             return
+
+        # VR face buttons (rising edge) drive the GUI's session actions hands-free
+        # -- mirroring the B-button->HOME edge handled inline in session.step().
+        # These are GUI concepts (the Collector / scene resets live here, not in
+        # the session), so they are read here. No-op with no VR client.
+        vr = self.session.state.snapshot()
+        if vr.record and not self._prev_record_btn:   # A: REC/PAUSE toggle
+            self._toggle_record()
+        if vr.save and not self._prev_save_btn:        # X: save the take
+            self._save()
+        if vr.reset and not self._prev_reset_btn:      # Y: fresh randomized scene
+            self._reset_all()
+            self._randomize()
+        self._prev_record_btn = vr.record
+        self._prev_save_btn = vr.save
+        self._prev_reset_btn = vr.reset
 
         moving = self.session.move_traj is not None
         if self.session.mode in ("joint", "task"):

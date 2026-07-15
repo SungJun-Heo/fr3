@@ -26,8 +26,11 @@ _HEADSET = {"x": 0.0, "y": 1.60, "z": 0.0}
 _IDENT_QUAT = {"x": 0.0, "y": 0.0, "z": 0.0, "w": 1.0}
 
 
-def _frame(hand_pos, grip, index, home):
-    """Build one Unity-shaped JSON frame (right hand active, left hand neutral)."""
+def _frame(hand_pos, grip, index, home, record=False, save=False, reset=False):
+    """Build one Unity-shaped JSON frame (right hand active, left hand neutral).
+
+    For the right teleop hand: A/B (record/home) are on the active controller,
+    X/Y (save/reset) on the free (left) one -- so all four are driveable here."""
     return {
         "headsetPos": _HEADSET,
         "headsetRot": _IDENT_QUAT,
@@ -36,17 +39,18 @@ def _frame(hand_pos, grip, index, home):
         "rightIndexTrigger": index,
         "rightGripTrigger": grip,
         "rightThumbstick": {"x": 0.0, "y": 0.0},
-        "buttonA": False,
+        "buttonA": record,
         "buttonB": home,
         "rightThumbstickClick": False,
-        # Left hand neutral/untracked -- the server only reads the active hand.
+        # Left hand neutral/untracked -- the server only reads the active hand's
+        # pose, but its face buttons (X/Y = save/reset) are still read.
         "leftHandPos": {"x": 0.0, "y": 0.0, "z": 0.0},
         "leftHandRot": _IDENT_QUAT,
         "leftIndexTrigger": 0.0,
         "leftGripTrigger": 0.0,
         "leftThumbstick": {"x": 0.0, "y": 0.0},
-        "buttonX": False,
-        "buttonY": False,
+        "buttonX": save,
+        "buttonY": reset,
         "leftThumbstickClick": False,
     }
 

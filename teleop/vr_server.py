@@ -46,16 +46,21 @@ META_TO_ROBOT = np.array([[0.0, 0.0, 1.0],
                           [-1.0, 0.0, 0.0],
                           [0.0, 1.0, 0.0]])
 
-# Keys for each hand in the Unity JSON. Selecting a hand picks its pose, its two
-# triggers, and the button we treat as "go HOME / recover" (B for the right
-# controller, Y for the left -- the buttons that fall under the thumb).
+# Keys for each hand in the Unity JSON. Selecting a hand picks its pose and two
+# triggers, plus all four face buttons split by role: the teleop hand's two do
+# the frequent per-take actions -- "record" (lower = REC/PAUSE) and "home" (upper
+# = HOME/recover) -- while the free hand's two do the session actions -- "save"
+# (lower) and "reset" (upper = reset-all + randomize). For the right teleop hand
+# that is A/B on the right controller and X/Y on the left; mirrored for the left.
 _HAND_KEYS = {
     "right": dict(pos="rightHandPos", rot="rightHandRot",
                   grip="rightGripTrigger", index="rightIndexTrigger",
-                  home="buttonB"),
+                  home="buttonB", record="buttonA",    # teleop (right) hand
+                  save="buttonX", reset="buttonY"),     # free (left) hand
     "left": dict(pos="leftHandPos", rot="leftHandRot",
                  grip="leftGripTrigger", index="leftIndexTrigger",
-                 home="buttonY"),
+                 home="buttonY", record="buttonX",      # teleop (left) hand
+                 save="buttonA", reset="buttonB"),       # free (right) hand
 }
 
 
@@ -108,12 +113,17 @@ class VRSnapshot:
 
     ``hand_tf`` is the mapped hand pose (robot frame). ``grip`` is the clutch
     trigger (hold to move the robot); ``trigger`` is the index trigger (gripper).
-    ``home`` requests HOME/recover. ``connected`` / ``tracking`` let the loop
-    decide whether the pose is trustworthy this tick."""
+    ``home`` requests HOME/recover; ``record`` toggles episode REC/PAUSE;
+    ``save`` writes the current take; ``reset`` does reset-all + randomize (a
+    fresh randomized scene). ``connected`` / ``tracking`` let the loop decide
+    whether the pose is trustworthy this tick."""
     hand_tf: np.ndarray
     grip: float
     trigger: float
     home: bool
+    record: bool
+    save: bool
+    reset: bool
     connected: bool
     tracking: bool
     frames: int    # total frames published (for measuring input rate)
@@ -134,17 +144,23 @@ class VRState:
         self._grip = 0.0
         self._trigger = 0.0
         self._home = False
+        self._record = False
+        self._save = False
+        self._reset = False
         self._connected = False
         self._tracking = False
         self._frames = 0  # incremented each publish; lets the loop measure input fps
         self._stamp = 0.0  # perf_counter of the last publish; lets it measure latency
 
-    def publish(self, hand_tf, grip, trigger, home, tracking):
+    def publish(self, hand_tf, grip, trigger, home, record, save, reset, tracking):
         with self._lock:
             self._hand_tf = hand_tf
             self._grip = float(grip)
             self._trigger = float(trigger)
             self._home = bool(home)
+            self._record = bool(record)
+            self._save = bool(save)
+            self._reset = bool(reset)
             self._tracking = bool(tracking)
             self._frames += 1
             self._stamp = time.perf_counter()
@@ -160,8 +176,9 @@ class VRState:
     def snapshot(self):
         with self._lock:
             return VRSnapshot(self._hand_tf.copy(), self._grip, self._trigger,
-                              self._home, self._connected, self._tracking,
-                              self._frames, self._stamp)
+                              self._home, self._record, self._save, self._reset,
+                              self._connected, self._tracking, self._frames,
+                              self._stamp)
 
 
 class VRTeleopServer:
@@ -245,13 +262,17 @@ class VRTeleopServer:
         tf, tracked = meta_pose_to_robot(vr.get(k["pos"], {}), vr.get(k["rot"], {}))
         if tracked:
             self._last_tf = tf
-        # grip = clutch (hold to move the robot); index = gripper; button = HOME.
-        # Triggers/button are read every frame so releasing still registers even
-        # if the hand is momentarily untracked.
+        # grip = clutch (hold to move the robot); index = gripper; the four face
+        # buttons = HOME / record / save / reset. Triggers/buttons are read every
+        # frame so a release still registers even if the hand is momentarily
+        # untracked.
         self.state.publish(
             hand_tf=self._last_tf.copy(),
             grip=vr.get(k["grip"], 0.0),
             trigger=vr.get(k["index"], 0.0),
             home=vr.get(k["home"], False),
+            record=vr.get(k["record"], False),
+            save=vr.get(k["save"], False),
+            reset=vr.get(k["reset"], False),
             tracking=tracked,
         )
