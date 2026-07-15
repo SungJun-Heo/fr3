@@ -10,6 +10,9 @@ env/
 *.mp4
 *.png.tmp
 
+# Collected datasets (raw IR episodes) -- kept local, transferred manually
+/data/
+
 # OS / editor
 .DS_Store
 *.swp

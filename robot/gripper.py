@@ -53,6 +53,9 @@ class Gripper:
         self._finger_bodies = finger
         self._own_bodies = finger | {self.model.body("hand").id}
         self.max_width = MAX_WIDTH
+        # Last commanded width (m), stored by set_target_width -- the gripper's
+        # "action" for recording, kept separate from the measured width().
+        self._target_width = self.width()
 
     # -- state ---------------------------------------------------------
 
@@ -90,8 +93,23 @@ class Gripper:
         """Set the gripper target *without stepping* -- for an external loop
         that steps the sim itself (e.g. the GUI). Applied on the next mj_step,
         so the gripper tracks alongside the arm."""
+        self._target_width = float(width)   # remember the commanded width (action)
         self.data.ctrl[self._act] = float(np.clip(width / self.max_width * 255.0,
                                                    0.0, 255.0))
+
+    def target_width(self):
+        """The last commanded width (m) from ``set_target_width`` -- the gripper
+        action, distinct from the measured ``width()``."""
+        return self._target_width
+
+    def set_kinematic_width(self, width):
+        """Place the fingers directly at ``width`` (qpos), for episode replay.
+        Splits the opening evenly across the two symmetric finger joints; does
+        not step or run forward kinematics (the replay caller does one forward
+        for the whole frame). Inverse of ``width()``."""
+        half = 0.5 * float(width)
+        self.data.qpos[self._fj1] = half
+        self.data.qpos[self._fj2] = half
 
     def _set_force_limit(self, force):
         """Cap the gripper actuator's output force (N). This is what separates a

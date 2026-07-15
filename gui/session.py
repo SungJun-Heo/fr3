@@ -230,6 +230,11 @@ class ControlSession:
         """Put task objects back at their start pose (arm untouched)."""
         self.robot.reset_objects()
 
+    def randomize_objects(self):
+        """Randomize movable object poses within their task ranges (arm
+        untouched) -- domain randomization for the next episode."""
+        self.robot.randomize_objects()
+
     def reset_all(self):
         """Objects and arm instantly back to start (a synchronous scene reset)."""
         self.move_traj = None

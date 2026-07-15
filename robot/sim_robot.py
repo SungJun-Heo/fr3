@@ -22,7 +22,10 @@ Field/convention parity with pylibfranka's ``RobotState``:
   * ``O_T_EE``          -- end-effector pose as a **column-major** 4x4 flattened
                            to length 16, so translation lives at indices
                            12,13,14 -- exactly how camel-franka indexes it.
-  * ``O_T_EE_d``        -- desired EE pose; mirrors ``O_T_EE`` for now.
+  * ``O_T_EE_d``        -- last *commanded* EE pose (the desired pose the control
+                           loop is tracking): in Cartesian control the streamed
+                           pose, in joint control the FK of the joint target.
+                           Set in ``writeOnce``; the action signal for recording.
   * ``tau_ext_hat_filtered`` -- filtered external joint torque, estimated from
                            MuJoCo contact/constraint forces.
   * ``O_F_ext_hat_K``,  -- filtered external EE wrench (base frame). K-frame
@@ -97,6 +100,12 @@ class SimRobot:
         # stutter. Set by start_cartesian_pose_control(safety=...).
         self._cart_safety = "trip"
 
+        # Last commanded EE pose -- the truthful O_T_EE_d (real-robot parity).
+        # writeOnce sets it: the streamed pose in Cartesian control, FK of the
+        # joint target in joint control. Seeded with the current EE pose so
+        # read_once is valid before any command is issued.
+        self._O_T_EE_d = self._ee_pose()
+
         # External-force estimate (filled after each control step) and its
         # low-pass state. Filtering mirrors the real robot's *_hat_filtered
         # signals: a brief tap should not trip, a sustained push should.
@@ -120,12 +129,21 @@ class SimRobot:
         # back without restarting. Static fixtures (no joint) are skipped.
         self._object_qadr = []
         self._object_vadr = []
+        self._movable_object_names = []   # names paired with _object_qadr, in order
         for name in self._object_names:
             body = self.model.body(name)
             if body.jntnum[0] > 0:
                 jadr = body.jntadr[0]
                 self._object_qadr.append(int(self.model.jnt_qposadr[jadr]))
                 self._object_vadr.append(int(self.model.jnt_dofadr[jadr]))
+                self._movable_object_names.append(name)
+
+        # Per-movable-object randomization ranges from the task spec (optional
+        # ``rand`` field in tasks.py), paired with _object_qadr order.
+        from scene.tasks import TASKS
+        _specs = {o["name"]: o for o in TASKS.get(task, {}).get("objects", [])}
+        self._object_rand = [_specs.get(n, {}).get("rand")
+                             for n in self._movable_object_names]
 
     def read_once(self):
         """Return the current ``RobotState`` without advancing the sim."""
@@ -141,7 +159,7 @@ class SimRobot:
             tau_J=d.qfrc_actuator[self._vadr].copy(),
             tau_ext_hat_filtered=self._tau_ext_filt.copy(),
             O_T_EE=O_T_EE,
-            O_T_EE_d=O_T_EE.copy(),
+            O_T_EE_d=self._O_T_EE_d.copy(),
             O_F_ext_hat_K=self._O_F_ext_filt.copy(),
             K_F_ext_hat_K=self._O_F_ext_filt.copy(),  # skeleton: EE-frame rot TODO
         )
@@ -217,6 +235,29 @@ class SimRobot:
             self.data.qvel[vadr:vadr + 6] = 0.0
         mujoco.mj_forward(self.model, self.data)
 
+    def randomize_objects(self, rng=None):
+        """Place each movable object that declares a ``rand`` range (tasks.py) at
+        a fresh random pose within it -- x/y/z in metres, yaw in radians -- and
+        zero its velocity; unlisted axes keep the declared start, objects without
+        a ``rand`` spec are left untouched. Per-episode domain randomization (the
+        GUI "Randomize" button). Sim-only, like reset_objects; the arm is not
+        moved. Record the resulting layout (object_qpos) to reconstruct it later."""
+        rng = np.random.default_rng() if rng is None else rng
+        for qadr, vadr, rand in zip(self._object_qadr, self._object_vadr,
+                                    self._object_rand):
+            if not rand:
+                continue
+            pose = self.model.qpos0[qadr:qadr + 7].copy()   # declared pos + quat
+            for i, ax in enumerate(("x", "y", "z")):
+                if ax in rand:
+                    pose[i] = rng.uniform(*rand[ax])
+            if "yaw" in rand:
+                a = 0.5 * float(rng.uniform(*rand["yaw"]))
+                pose[3:7] = [np.cos(a), 0.0, 0.0, np.sin(a)]  # quat wxyz about z
+            self.data.qpos[qadr:qadr + 7] = pose
+            self.data.qvel[vadr:vadr + 6] = 0.0
+        mujoco.mj_forward(self.model, self.data)
+
     def reset_home(self, q=None):
         """Snap the arm *instantly* to a joint configuration (default: the HOME
         keyframe), zeroing velocity and pointing the actuators at it so it holds
@@ -230,6 +271,39 @@ class SimRobot:
         self.data.qvel[self._vadr] = 0.0
         self.data.ctrl[self._act_arm] = q  # hold HOME, don't pull back
         self.automatic_error_recovery()
+        mujoco.mj_forward(self.model, self.data)
+
+    # --- episode replay (kinematic) ------------------------------------
+
+    @property
+    def movable_object_names(self):
+        """Task objects that have a free joint (their pose can move / be
+        recorded / replayed), in the same order as ``object_qpos``."""
+        return list(self._movable_object_names)
+
+    def object_qpos(self):
+        """Free-joint pose (pos(3)+quat(4), MuJoCo wxyz) of each movable task
+        object, as ``(n_obj, 7)`` -- the ground-truth object state to record so
+        an episode can be replayed faithfully. Empty ``(0, 7)`` if none."""
+        if not self._object_qadr:
+            return np.zeros((0, 7))
+        return np.array([self.data.qpos[a:a + 7] for a in self._object_qadr])
+
+    def set_replay_state(self, q, object_qpos=None, dq=None):
+        """Place the arm (and, if given, the movable objects) at a recorded state
+        and run forward kinematics -- used to reconstruct an episode's initial
+        scene before re-simulating it (see ``collection/replay.py``). Sets qpos,
+        sets arm velocity to ``dq`` (default zero), zeros object velocity. No
+        physics is stepped and no control target is changed. Objects are applied
+        in ``movable_object_names`` order (extra/missing ones are ignored via
+        zip, so an arm-only or mismatched episode still places the arm)."""
+        self.data.qpos[self._qadr] = np.asarray(q, dtype=float)
+        self.data.qvel[self._vadr] = 0.0 if dq is None else np.asarray(dq, dtype=float)
+        if object_qpos is not None:
+            for a, v, pose in zip(self._object_qadr, self._object_vadr,
+                                  np.asarray(object_qpos, float)):
+                self.data.qpos[a:a + 7] = pose
+                self.data.qvel[v:v + 6] = 0.0   # so physics is stable on resume
         mujoco.mj_forward(self.model, self.data)
 
     # --- collision reflex ----------------------------------------------
@@ -364,8 +438,13 @@ class ActiveControl:
                 "robot in reflex/error state; call automatic_error_recovery()")
         if isinstance(command, JointPositions):
             q_target = np.asarray(command.q, dtype=float)
+            # Commanded EE pose (O_T_EE_d) = FK of the joint target.
+            robot._O_T_EE_d = pose_to_vec(*robot._ik.fk_pose(q_target))
         elif isinstance(command, CartesianPose):
             q_target = robot._cartesian_to_ctrl(command)  # IK + safety; may raise
+            # Commanded EE pose is exactly the streamed pose (real firmware parity);
+            # set only after the safety check passes (a trip applies no command).
+            robot._O_T_EE_d = np.asarray(command.O_T_EE, dtype=float).copy()
         else:
             raise TypeError(f"unsupported command: {type(command).__name__}")
         # Write the 7 arm targets; leave the gripper ctrl slot untouched.

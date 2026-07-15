@@ -21,8 +21,11 @@ overlay toggle are all adjustable at runtime from the panel's settings row.
 Usage:  python main.py
 """
 import math
+import os
 import sys
+import time
 import tkinter as tk
+from tkinter import messagebox
 from pathlib import Path
 
 import numpy as np
@@ -32,6 +35,8 @@ from robot import vec_to_pose
 from scene import TASKS
 from teleop.clutch import SMOOTH_TAU
 from gui.session import ControlSession, TICK_MS
+from collection import (CollectionConfig, Collector, EpisodePlayer,
+                        count_episodes, list_episodes, delete_episode)
 
 
 def euler_to_mat(rx, ry, rz):
@@ -61,6 +66,8 @@ BLUE   = "#3b7dd8"
 GREEN  = "#2fa96b"
 AMBER  = "#e0a24a"
 ORANGE = "#e0703b"
+VIOLET = "#8b5cf6"    # domain-randomize objects
+DANGER = "#d9534f"   # destructive action (delete episode)
 IDLE   = "#d4dbe4"   # unselected mode button
 TROUGH = "#d7dde6"   # slider trough
 
@@ -71,7 +78,8 @@ FONT_MODE  = ("sans", 16, "bold")   # the big JOINT / TASK / VR buttons
 FONT_IND   = ("sans", 16, "bold")   # state indicator
 FONT_SMALL   = ("sans", 11)
 FONT_LABEL   = ("sans", 13, "bold")   # slider labels (x/y/z, joint1, open/closed, ...)
-FONT_SETTING = ("sans", 16, "bold")   # the task selector row
+FONT_SETTING = ("sans", 16, "bold")   # the task selector label
+FONT_TASK    = ("sans", 20, "bold")   # the task dropdown (enlarged)
 FONT_MANIP   = ("sans", 14, "bold")   # manipulability readout
 FONT_MONO    = ("monospace", 13)
 
@@ -92,6 +100,14 @@ class UnifiedGUI:
         self._init_tau = smooth_tau
         self._editing = False     # True while the user is typing into entries
         self._was_moving = False  # track move end so we resnap the sliders
+        # Data collection: a Collector is built lazily on the first Record press
+        # (it opens an offscreen camera renderer, so we defer the cost until used).
+        self.collector = None
+        self.collect_config = CollectionConfig()   # shared by the Collector + counter
+        self._last_saved = None
+        self._last_collect_state = "idle"   # idle / rec / paused (for UI resync)
+        self.player = EpisodePlayer(self.session)  # re-simulation episode replay
+        self._replaying = False   # GUI replay mode (distinct from player's cursor)
         self._build_ui()
         self._sync_sliders_to_state()
 
@@ -106,8 +122,24 @@ class UnifiedGUI:
         self.root.tk_setPalette(background=BG, foreground=INK,
                                 activeBackground="#dbe2ec", activeForeground=INK)
 
+        # Two columns. The left "main" column holds live control (mode bar, state
+        # indicator, sliders, status); the right "Session / Data" card groups
+        # everything about the session/episode -- task selection, scene resets,
+        # and recording -- so they sit together, apart from the control widgets.
+        body = tk.Frame(self.root, bg=BG)
+        body.pack(fill=tk.BOTH, expand=True)
+        main_col = tk.Frame(body, bg=BG)
+        main_col.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+        side_col = tk.Frame(body, bg=BG)
+        side_col.pack(side=tk.RIGHT, fill=tk.Y)
+        self.session_card = tk.LabelFrame(
+            side_col, text="Session / Data", font=FONT_BOLD, bg=CARD, fg=MUTED,
+            relief="flat", bd=0, padx=12, pady=10,
+            highlightbackground=TROUGH, highlightthickness=1)
+        self.session_card.pack(fill=tk.Y, anchor="n", padx=(0, 12), pady=12)
+
         # -- mode + action bar --
-        top = tk.Frame(self.root, bg=BG)
+        top = tk.Frame(main_col, bg=BG)
         top.pack(fill=tk.X, padx=12, pady=(12, 6))
         self.mode_buttons = {}
         for text, val in (("JOINT", "joint"), ("TASK", "task"), ("VR", "vr")):
@@ -131,31 +163,33 @@ class UnifiedGUI:
         self.exec_entry.pack(side=tk.LEFT)
 
         # -- state indicator (fr3's stand-in for camel-franka's FSM label) --
-        self.indicator = tk.Label(self.root, text="", anchor="w", fg="white",
+        self.indicator = tk.Label(main_col, text="", anchor="w", fg="white",
                                   font=FONT_IND, padx=14, pady=8)
         self.indicator.pack(fill=tk.X, padx=12, pady=(2, 6))
 
         # -- manipulability readout (turns red near a singularity) --
-        self.manip_label = tk.Label(self.root, text="", anchor="w", font=FONT_MANIP,
+        self.manip_label = tk.Label(main_col, text="", anchor="w", font=FONT_MANIP,
                                     bg=BG, fg=INK, padx=14)
         self.manip_label.pack(fill=tk.X, padx=12, pady=(0, 4))
 
-        # -- task selector (its own row, larger font) --
-        trow = tk.Frame(self.root, bg=BG)
-        trow.pack(fill=tk.X, padx=12, pady=(2, 6))
-        tk.Label(trow, text="task", font=FONT_SETTING, bg=BG, fg=INK).pack(side=tk.LEFT)
+        # -- task selector: label on its own line, the (enlarged) dropdown below --
+        tsec = tk.Frame(self.session_card, bg=CARD)
+        tsec.pack(fill=tk.X, pady=(0, 2))
+        tk.Label(tsec, text="task", font=FONT_SETTING, bg=CARD, fg=INK,
+                 anchor="w").pack(fill=tk.X)
         self.task_var = tk.StringVar(value=self.session.task_name)
-        om = tk.OptionMenu(trow, self.task_var, *sorted(TASKS), command=self._on_task)
-        om.config(font=FONT_SETTING, bg=CARD, fg=INK, relief="flat", bd=0, cursor="hand2",
-                  activebackground="#e6ebf1", highlightthickness=1, highlightbackground=TROUGH)
-        om["menu"].config(font=FONT_SETTING, bg=CARD, fg=INK, activebackground=ACCENT,
+        om = tk.OptionMenu(tsec, self.task_var, *sorted(TASKS), command=self._on_task)
+        om.config(font=FONT_TASK, bg=CARD, fg=INK, relief="flat", bd=0, cursor="hand2",
+                  activebackground="#e6ebf1", highlightthickness=1, highlightbackground=TROUGH,
+                  anchor="w", padx=14, pady=8)
+        om["menu"].config(font=FONT_TASK, bg=CARD, fg=INK, activebackground=ACCENT,
                           activeforeground="white")
-        om.pack(side=tk.LEFT, padx=(10, 0))
+        om.pack(fill=tk.X, pady=(4, 0))
 
         # -- mode-panel slot: an expanding frame the mode's panels pack into, so
         # the window (fixed size, see run()) never resizes when you switch modes;
         # the slot just absorbs the height difference between modes. --
-        self.panel_area = tk.Frame(self.root, bg=BG)
+        self.panel_area = tk.Frame(main_col, bg=BG)
         self.panel_area.pack(fill=tk.BOTH, expand=True, padx=12, pady=2)
 
         # -- joint panel: slider + numeric entry per DOF (degrees) --
@@ -208,20 +242,81 @@ class UnifiedGUI:
         self.smooth_slider.config(command=lambda v: self.session.set_smooth_tau(float(v)))
         self.smooth_slider.pack(side=tk.LEFT, fill=tk.X, expand=True)
 
-        # -- reset buttons (always available) --
-        self.reset_frame = tk.Frame(self.root, bg=BG)
-        self.reset_frame.pack(fill=tk.X, padx=12, pady=(4, 2))
+        # -- collected-episode counter (live) + scene reset / randomize --
+        self._sep(self.session_card)
+        self.episode_label = tk.Label(self.session_card, text="episodes collected: 0",
+                                      font=FONT_MANIP, bg=CARD, fg=INK, anchor="w")
+        self.episode_label.pack(fill=tk.X, pady=(0, 6))
+        # Randomize: domain-randomize the movable objects (set up a fresh scene
+        # before recording). Its own full-width row above the reset pair.
+        self._btn(self.session_card, "🎲 Randomize objects", self._randomize, VIOLET).pack(
+            fill=tk.X, pady=(0, 4))
+        self.reset_frame = tk.Frame(self.session_card, bg=CARD)
+        self.reset_frame.pack(fill=tk.X)
         self._btn(self.reset_frame, "Reset objects", self.session.reset_objects, GREEN).pack(
             side=tk.LEFT, expand=True, fill=tk.X, padx=(0, 4))
         self._btn(self.reset_frame, "Reset ALL", self._reset_all, ORANGE).pack(
             side=tk.LEFT, expand=True, fill=tk.X, padx=(4, 0))
 
-        # -- status --
-        self.status = tk.Label(self.root, text="", justify=tk.LEFT, anchor="w",
+        # -- data collection: record episodes to the raw IR (any mode) --
+        self._sep(self.session_card)
+        crec = tk.Frame(self.session_card, bg=CARD)
+        crec.pack(fill=tk.X)
+        tk.Label(crec, text="record episodes", font=FONT_BOLD, bg=CARD, fg=MUTED,
+                 anchor="w").pack(fill=tk.X, pady=(0, 4))
+        irow = tk.Frame(crec, bg=CARD)
+        irow.pack(fill=tk.X, pady=(0, 4))
+        tk.Label(irow, text="instr", font=FONT_LABEL, bg=CARD, fg=INK).pack(side=tk.LEFT)
+        self.instr_entry = self._mk_entry(irow, 16)
+        self.instr_entry.insert(0, "pick up the red cube")
+        self.instr_entry.pack(side=tk.LEFT, padx=(6, 0), fill=tk.X, expand=True)
+        # REC/PAUSE toggle + Save. Idle->REC starts; recording->PAUSE holds the
+        # buffer; paused->REC discards this take and records anew; Save writes it.
+        brow = tk.Frame(crec, bg=CARD)
+        brow.pack(fill=tk.X)
+        self.rec_btn = self._btn(brow, "● REC", self._toggle_record, GREEN)
+        self.rec_btn.pack(side=tk.LEFT, expand=True, fill=tk.X, padx=(0, 2))
+        self.save_btn = self._btn(brow, "Save", self._save, BLUE)
+        self.save_btn.pack(side=tk.LEFT, expand=True, fill=tk.X, padx=(2, 0))
+        self.collect_label = tk.Label(crec, text="idle", font=FONT_SMALL, bg=CARD,
+                                      fg=MUTED, anchor="w")
+        self.collect_label.pack(fill=tk.X, pady=(4, 0))
+
+        # -- replay: pick a saved episode and re-simulate its trajectory --
+        self._sep(self.session_card)
+        rsec = tk.Frame(self.session_card, bg=CARD)
+        rsec.pack(fill=tk.X)
+        tk.Label(rsec, text="replay episode", font=FONT_BOLD, bg=CARD, fg=MUTED,
+                 anchor="w").pack(fill=tk.X, pady=(0, 4))
+        self.episode_var = tk.StringVar(value="")
+        self.episode_menu = tk.OptionMenu(rsec, self.episode_var, "")
+        self.episode_menu.config(font=FONT_LABEL, bg=CARD, fg=INK, relief="flat", bd=0,
+                                 cursor="hand2", activebackground="#e6ebf1",
+                                 highlightthickness=1, highlightbackground=TROUGH, anchor="w")
+        self.episode_menu["menu"].config(font=FONT_LABEL, bg=CARD, fg=INK,
+                                         activebackground=ACCENT, activeforeground="white")
+        self.episode_menu.pack(fill=tk.X, pady=(0, 4))
+        rbrow = tk.Frame(rsec, bg=CARD)
+        rbrow.pack(fill=tk.X)
+        self.replay_btn = self._btn(rbrow, "▶ Replay", self._replay, ACCENT)
+        self.replay_btn.pack(side=tk.LEFT, expand=True, fill=tk.X, padx=(0, 2))
+        self.stop_btn = self._btn(rbrow, "■ Stop", self._stop_replay, ORANGE)
+        self.stop_btn.pack(side=tk.LEFT, expand=True, fill=tk.X, padx=(2, 0))
+        self.replay_label = tk.Label(rsec, text="", font=FONT_SMALL, bg=CARD,
+                                     fg=MUTED, anchor="w")
+        self.replay_label.pack(fill=tk.X, pady=(4, 0))
+        # Delete the selected episode, then reindex the rest to 0..N-1.
+        self.delete_btn = self._btn(rsec, "🗑 Delete episode", self._delete_episode, DANGER)
+        self.delete_btn.pack(fill=tk.X, pady=(4, 0))
+
+        # -- status (main column) --
+        self.status = tk.Label(main_col, text="", justify=tk.LEFT, anchor="w",
                                font=FONT_MONO, bg=CARD, fg=INK, wraplength=400,
                                padx=12, pady=10)
         self.status.pack(fill=tk.X, padx=12, pady=(4, 12))
         self._style_mode_buttons()
+        self._sync_collection_ui()
+        self._update_replay_ui()
         self._show_frame()
 
     # -- styled-widget factories ---------------------------------------
@@ -240,6 +335,10 @@ class UnifiedGUI:
         return tk.LabelFrame(self.panel_area, text=title, font=FONT_BOLD, bg=CARD, fg=MUTED,
                              relief="flat", bd=0, padx=6, pady=6,
                              highlightbackground=TROUGH, highlightthickness=1)
+
+    def _sep(self, parent):
+        """A thin horizontal rule to group sub-sections inside a card."""
+        tk.Frame(parent, bg=TROUGH, height=1).pack(fill=tk.X, pady=8)
 
     def _slider(self, parent, lo, hi, res, label, length=300):
         return tk.Scale(parent, from_=lo, to=hi, resolution=res, orient=tk.HORIZONTAL,
@@ -329,11 +428,179 @@ class UnifiedGUI:
         self.session.reset_all()
         self._sync_sliders_to_state()
 
+    def _randomize(self):
+        """Domain-randomize the movable objects (arm untouched)."""
+        self.session.randomize_objects()
+
+    # -- data collection -----------------------------------------------
+
+    def _instruction(self):
+        return self.instr_entry.get().strip() or "unspecified task"
+
+    def _toggle_record(self):
+        """REC/PAUSE toggle. idle->start recording; recording->pause; paused->
+        discard this take and start a fresh one (Save keeps it instead)."""
+        if self._replaying:
+            return                      # not while a replay is running
+        if self.collector is None:
+            self.collector = Collector(self.session, self.collect_config)
+        c = self.collector
+        if not c.active:                 # idle -> start recording
+            c.start_episode(self._instruction())
+        elif c.recording:                # recording -> pause (keep the buffer)
+            c.pause()
+        else:                            # paused -> discard, record anew
+            c.discard()
+            c.start_episode(self._instruction())
+        self._last_saved = None
+        self._sync_collection_ui()
+
+    def _save(self):
+        """Write the current episode (recording or paused) as a success."""
+        if self.collector is None or not self.collector.active:
+            return
+        path = self.collector.keep(success=True)
+        self._last_saved = path.name if path is not None else None
+        self._sync_collection_ui()
+
+    def _collect_state(self):
+        c = self.collector
+        if c is None or not c.active:
+            return "idle"
+        return "rec" if c.recording else "paused"
+
+    def _sync_collection_ui(self):
+        """Repaint the toggle + Save + status label for the current state."""
+        state = self._collect_state()
+        if state == "rec":               # recording -> the button pauses
+            self.rec_btn.config(text="❚❚ PAUSE", bg=AMBER, activebackground=_darken(AMBER))
+        else:                            # idle or paused -> the button (re)records
+            self.rec_btn.config(text="● REC", bg=GREEN, activebackground=_darken(GREEN))
+        # rec is only disabled during replay (see _replay); this path is never
+        # reached while replaying, so restore it here. Save is enabled ONLY while
+        # paused -- you pause the take, then Save it (or REC again to redo).
+        self.rec_btn.config(state=tk.NORMAL)
+        self.save_btn.config(state=tk.NORMAL if state == "paused" else tk.DISABLED)
+        self._refresh_collect_label()
+        self._update_episode_count()     # a Save just landed -> refresh the count
+        self._last_collect_state = state
+
+    def _update_episode_count(self):
+        """Show how many episodes are saved on disk for the current task (live),
+        and refresh the replay picker to match."""
+        n = count_episodes(self.collect_config.root, self.session.task_name)
+        self.episode_label.config(text=f"episodes collected: {n}")
+        self._refresh_episode_list()
+
+    def _refresh_episode_list(self):
+        """Rebuild the replay dropdown from the saved episodes of the current
+        task, keeping the selection valid (default: the latest episode)."""
+        eps = list_episodes(self.collect_config.root, self.session.task_name)
+        menu = self.episode_menu["menu"]
+        menu.delete(0, "end")
+        for name in eps:
+            menu.add_command(label=name, command=tk._setit(self.episode_var, name))
+        if self.episode_var.get() not in eps:
+            self.episode_var.set(eps[-1] if eps else "")
+        self._update_replay_ui()   # a new/removed episode changes Replay's enable
+
+    # -- replay --------------------------------------------------------
+
+    def _replay(self):
+        """Load the selected episode and re-simulate it (overrides live control
+        until it finishes or Stop is pressed)."""
+        if self._replaying:
+            return
+        if self.collector is not None and self.collector.active:
+            return                      # can't replay while recording
+        name = self.episode_var.get()
+        if not name:
+            return
+        ep_dir = self.collect_config.root / self.session.task_name / name
+        if not self.player.load(ep_dir):
+            return
+        self.player.start()             # reconstructs the recorded initial scene
+        self._replaying = True
+        self._replay_t0 = time.perf_counter()   # wall anchor for tempo pacing
+        if self.session.viewer is not None:
+            self.session.viewer.user_scn.ngeom = 0   # clear the stale EE overlay
+        self.rec_btn.config(state=tk.DISABLED)
+        self.save_btn.config(state=tk.DISABLED)
+        self._sync_sliders_to_state()   # the arm jumped to the episode start
+        self._update_replay_ui()
+
+    def _stop_replay(self):
+        """End replay and resume live control from the current (replayed) pose.
+        Runs both on the Stop button and on auto-finish."""
+        if not self._replaying:
+            return
+        self._replaying = False
+        self.player.stop()
+        self.session.recover()          # resync control targets -> no jump
+        self._sync_sliders_to_state()
+        self._sync_collection_ui()      # restore rec/save button states
+        self._update_replay_ui()
+
+    def _delete_episode(self):
+        """Delete the selected episode (with confirmation) and reindex the rest
+        so the numbering stays contiguous."""
+        if self._replaying:
+            return
+        name = self.episode_var.get()
+        if not name:
+            return
+        if not messagebox.askyesno("Delete episode",
+                                   f"Delete {name} from '{self.session.task_name}'?\n"
+                                   "This cannot be undone; remaining episodes are renumbered."):
+            return
+        delete_episode(self.collect_config.root, self.session.task_name, name)
+        self.episode_var.set("")            # force _refresh to pick a valid one
+        self._update_episode_count()        # refresh count + dropdown + replay UI
+
+    def _replay_delay_ms(self):
+        """Delay (ms) to the next replay frame so playback matches the recorded
+        wall-clock tempo. Absolute-target scheduling self-corrects drift; falls
+        back to the fixed tick when the episode has no wall_time."""
+        elapsed = self.player.rec_elapsed
+        i, n = self.player.progress          # i = index of the next frame to show
+        if elapsed is None or i >= n:
+            return TICK_MS
+        target = self._replay_t0 + float(elapsed[i])
+        return max(1, int((target - time.perf_counter()) * 1000))
+
+    def _update_replay_ui(self):
+        """Repaint the replay picker/buttons/progress for the current state."""
+        has_ep = bool(self.episode_var.get())
+        self.replay_btn.config(
+            state=tk.NORMAL if (has_ep and not self._replaying) else tk.DISABLED)
+        self.delete_btn.config(
+            state=tk.NORMAL if (has_ep and not self._replaying) else tk.DISABLED)
+        self.stop_btn.config(state=tk.NORMAL if self._replaying else tk.DISABLED)
+        self.episode_menu.config(state=tk.DISABLED if self._replaying else tk.NORMAL)
+        i, n = self.player.progress
+        self.replay_label.config(
+            text=(f"▶ {self.player.name}  {i}/{n}" if self._replaying else ""),
+            fg=ACCENT if self._replaying else MUTED)
+
+    def _refresh_collect_label(self):
+        state = self._collect_state()
+        if state == "rec":
+            self.collect_label.config(
+                text=f"● REC  {self.collector.recorder.num_frames} frames", fg="#e05a5a")
+        elif state == "paused":
+            self.collect_label.config(
+                text=f"❚❚ PAUSED  {self.collector.recorder.num_frames} frames", fg=AMBER)
+        elif self._last_saved:
+            self.collect_label.config(text=f"saved {self._last_saved}", fg=GREEN)
+        else:
+            self.collect_label.config(text="idle", fg=MUTED)
+
     # -- runtime settings ----------------------------------------------
 
     def _on_task(self, name):
         self.session.reload_task(name)
         self._sync_sliders_to_state()
+        self._update_episode_count()   # count is per-task -> refresh for the new one
         self.root.title(f"FR3 sim control [{self.session.task_name}]")
 
     # -- per-tick sync -------------------------------------------------
@@ -386,6 +653,24 @@ class UnifiedGUI:
     # -- control tick --------------------------------------------------
 
     def _tick(self):
+        # Replay overrides live control: re-simulate the selected episode frame by
+        # frame, syncing the viewer, until it ends or Stop is pressed.
+        if self._replaying:
+            if self.session.viewer is not None and not self.session.viewer.is_running():
+                self.root.destroy()
+                return
+            if self.player.step():
+                if self.session.viewer is not None:
+                    self.session.viewer.sync()
+                self._update_replay_ui()
+                delay = self._replay_delay_ms()
+            else:
+                self._stop_replay()
+                delay = TICK_MS
+            self._update_status()
+            self.root.after(delay, self._tick)
+            return
+
         moving = self.session.move_traj is not None
         if self.session.mode in ("joint", "task"):
             self.session.set_gripper_frac(self.gripper_slider.get())
@@ -395,6 +680,14 @@ class UnifiedGUI:
         if not self.session.step():
             self.root.destroy()
             return
+
+        # Record a frame after the tick's physics (handles task reload internally).
+        if self.collector is not None:
+            self.collector.on_tick(self.session)
+            if self._collect_state() != self._last_collect_state:
+                self._sync_collection_ui()       # e.g. a reload discarded the take
+            else:
+                self._refresh_collect_label()    # live frame counter
 
         # After a timed move finishes, snap the sliders to the settled pose so
         # live tracking resumes from there instead of yanking back to old values.
@@ -443,9 +736,23 @@ class UnifiedGUI:
         self.root.geometry(f"{w}x{h}")
         self.root.minsize(w, h)
         self.root.resizable(False, False)
+        # Closing the window (X button) or the MuJoCo viewer both end mainloop;
+        # either way run the same shutdown so the process always terminates.
+        self.root.protocol("WM_DELETE_WINDOW", self.root.destroy)
         self.root.after(TICK_MS, self._tick)
         self.root.mainloop()
-        self.session.close()
+        self._shutdown()
+
+    def _shutdown(self):
+        """Close the viewer + VR server, then force-terminate. os._exit avoids a
+        lingering MuJoCo / GL / render thread keeping the process alive after the
+        UI is closed (a recurring "mujoco won't quit" symptom)."""
+        try:
+            if self.collector is not None:
+                self.collector.close()
+            self.session.close()
+        finally:
+            os._exit(0)
 
 
 def main():

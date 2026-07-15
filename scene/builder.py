@@ -33,7 +33,11 @@ def build_task(task_name):
 
     object_names = []
     for obj in task["objects"]:
-        body = add_object(spec, **obj)
+        # ``rand`` is a per-object randomization range (see tasks.py), not a
+        # geometry parameter -- SimRobot reads it from the task spec; strip it
+        # here so it never reaches the geometry builder.
+        geom = {k: v for k, v in obj.items() if k != "rand"}
+        body = add_object(spec, **geom)
         object_names.append(body.name)
 
     return spec.compile(), object_names

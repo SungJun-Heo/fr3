@@ -39,6 +39,16 @@ class DLSIKSolver:
         mujoco.mj_kinematics(self.model, self.data)
         mujoco.mj_comPos(self.model, self.data)   # needed for site Jacobian
 
+    def fk_pose(self, q):
+        """End-effector pose at configuration ``q`` as ``(position(3,), rotation(3,3))``.
+
+        The one public FK: composes the private ``_fk`` (scratch data, so the live
+        sim is untouched) and reads the site pose. Used e.g. to report the EE pose
+        the robot is *commanding* in joint-position mode (its desired ``O_T_EE_d``)."""
+        self._fk(q)
+        return (self.data.site_xpos[self.site].copy(),
+                self.data.site_xmat[self.site].reshape(3, 3).copy())
+
     def _pose_error(self, data, target_pos, target_mat):
         """6D error [Δposition(3), Δrotation(3)] from the pose in ``data``."""
         err_pos = np.asarray(target_pos) - data.site_xpos[self.site]
