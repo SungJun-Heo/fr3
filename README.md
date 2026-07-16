@@ -66,6 +66,7 @@ shows the tracking error in mm.
 | `overlay/` | Viewer-overlay debug drawing (markers, pose frames). Neutral layer shared by `teleop` and `examples`. |
 | `models/` | `fr3_with_gripper` scene (arm + Franka Hand + table). |
 | `examples/` | Tutorial scripts, one per build step — see [examples/README.md](examples/README.md). |
+| `tests/` | `unittest` suite (no pytest dependency). Offline: IR schema single-home, recorder round-trip, `evaluate` harness (fake env). Sim-backed (tiny 32×32 cameras): the 4 tagged-action decode paths, delta integration, per-task success. Run: `python -m unittest discover -s tests`. |
 | `docs/` | Study notes (e.g. the Cartesian-IK control derivation). |
 | `mujoco_menagerie/` | Upstream MuJoCo model submodule (the FR3 source). |
 
@@ -115,11 +116,14 @@ home:
 - *VLA consumer:* `rollout.SimEnv` (observe → apply one tagged action → step;
   absolute + delta, joint + Cartesian) · per-task success detection · `evaluate`
   rollout harness (success rate).
+- *Tests:* `unittest` suite covering the IR schema, recorder round-trip, the four
+  tagged-action decode paths, delta integration, per-task success, and the eval
+  harness (`python -m unittest discover -s tests`).
 
 **Next:** raw-IR transfer to the training server · IK quality (null-space toward a
-reference posture + LPF, per the `camel-RBY1` OSMC controller) · a `tests/` suite.
-Per-model **conversion / training / inference** are separate projects; fr3
-produces the raw IR and hosts the rollout env.
+reference posture + LPF, per the `camel-RBY1` OSMC controller). Per-model
+**conversion / training / inference** are separate projects; fr3 produces the raw
+IR and hosts the rollout env.
 
 ## Related
 
