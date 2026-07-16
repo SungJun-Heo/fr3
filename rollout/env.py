@@ -34,7 +34,7 @@ import numpy as np
 sys.path.insert(0, str(Path(__file__).parent.parent))
 from robot import SimRobot, Gripper, JointPositions, CartesianPose
 from collection.camera import SimCameraRenderer
-from collection.schema import robot_meta as _robot_meta
+from collection.schema import robot_meta as _robot_meta, observation_from_state
 from scene.tasks import task_instruction
 from rollout.success import task_success
 
@@ -78,21 +78,15 @@ class SimEnv:
 
     def observe(self):
         """The VLA input this tick: raw images + the FULL measured proprio (keyed
-        by the IR field names) + language. The policy's adapter selects/normalizes
-        whatever fields it needs (see ``metadata()`` for constants like max_width)."""
-        st = self.robot.read_once()
-        g = self.gripper.read_once()
+        by the IR field names) + language. The proprio is built by the SAME
+        ``collection.schema.observation_from_state`` the recorder uses, so a
+        policy sees identical fields/dtype at train and rollout time. The policy's
+        adapter selects/normalizes what it needs (see ``metadata()`` for constants
+        like max_width)."""
         return {
             "images": self.cams.render(),                # {cam: (H,W,3) uint8 RGB}
-            "proprio": {
-                "q": st.q, "dq": st.dq, "tau_J": st.tau_J,
-                "tau_ext_hat_filtered": st.tau_ext_hat_filtered,
-                "O_T_EE": st.O_T_EE,                      # column-major len-16
-                "O_F_ext_hat_K": st.O_F_ext_hat_K,
-                "K_F_ext_hat_K": st.K_F_ext_hat_K,
-                "gripper_width": np.float32(g.width),
-                "gripper_is_grasped": bool(g.is_grasped),
-            },
+            "proprio": observation_from_state(self.robot.read_once(),
+                                              self.gripper.read_once()),
             "instruction": self.instruction,
         }
 

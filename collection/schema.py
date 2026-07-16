@@ -48,6 +48,29 @@ CONVENTIONS = dict(
 )
 
 
+def observation_from_state(state, gripper_state):
+    """The measured-observation subset, keyed by IR field name -- the ONE home
+    for "what proprioception is". Both the recorder (via ``frame_from_state``)
+    and the rollout env's ``observe()`` build from this, so a policy sees the
+    SAME field vocabulary (and dtype) at collect time and at rollout time.
+
+    Deliberately EXCLUDES the commanded action (``q_d`` / ``O_T_EE_d`` /
+    ``gripper_width_d``) and privileged ground truth (``object_qpos``): those are
+    recorded as labels / for replay, but are not observation a policy may see.
+    """
+    return dict(
+        q=np.asarray(state.q, np.float64),
+        dq=np.asarray(state.dq, np.float64),
+        tau_J=np.asarray(state.tau_J, np.float64),
+        tau_ext_hat_filtered=np.asarray(state.tau_ext_hat_filtered, np.float64),
+        O_T_EE=np.asarray(state.O_T_EE, np.float64),         # column-major len-16
+        O_F_ext_hat_K=np.asarray(state.O_F_ext_hat_K, np.float64),
+        K_F_ext_hat_K=np.asarray(state.K_F_ext_hat_K, np.float64),
+        gripper_width=float(gripper_state.width),
+        gripper_is_grasped=bool(gripper_state.is_grasped),
+    )
+
+
 def frame_from_state(state, gripper_state, gripper_width_d, sim_time, wall_time,
                      cam_extrinsics, object_qpos):
     """One IR frame (dict of arrays/scalars) from the sim's value objects.
@@ -64,16 +87,8 @@ def frame_from_state(state, gripper_state, gripper_width_d, sim_time, wall_time,
     frame = dict(
         sim_time=float(sim_time),
         wall_time=float(wall_time),
-        # observation -- measured state
-        q=np.asarray(state.q, np.float64),
-        dq=np.asarray(state.dq, np.float64),
-        tau_J=np.asarray(state.tau_J, np.float64),
-        tau_ext_hat_filtered=np.asarray(state.tau_ext_hat_filtered, np.float64),
-        O_T_EE=np.asarray(state.O_T_EE, np.float64),
-        O_F_ext_hat_K=np.asarray(state.O_F_ext_hat_K, np.float64),
-        K_F_ext_hat_K=np.asarray(state.K_F_ext_hat_K, np.float64),
-        gripper_width=float(gripper_state.width),
-        gripper_is_grasped=bool(gripper_state.is_grasped),
+        # observation -- measured state (single home: observation_from_state)
+        **observation_from_state(state, gripper_state),
         # action -- commanded targets this step
         q_d=np.asarray(state.q_d, np.float64),
         O_T_EE_d=np.asarray(state.O_T_EE_d, np.float64),
