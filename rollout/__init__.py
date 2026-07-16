@@ -7,5 +7,7 @@ transport -- lives in a separate inference project; here we only expose the env.
 """
 
 from rollout.env import SimEnv
+from rollout.success import task_success
+from rollout.eval import evaluate
 
-__all__ = ["SimEnv"]
+__all__ = ["SimEnv", "task_success", "evaluate"]

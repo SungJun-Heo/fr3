@@ -30,6 +30,7 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 from robot import SimRobot, Gripper, JointPositions
 from collection.camera import SimCameraRenderer
 from scene.tasks import task_instruction
+from rollout.success import task_success
 
 
 class SimEnv:
@@ -102,6 +103,11 @@ class SimEnv:
         return self.observe()
 
     # -- helpers -------------------------------------------------------
+
+    def success(self):
+        """Task accomplished this tick? (ground-truth sim check; see
+        ``rollout/success.py``). Lets a rollout terminate / be scored."""
+        return task_success(self)
 
     def is_grasped(self):
         return bool(self.gripper.read_once().is_grasped)
