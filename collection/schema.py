@@ -45,6 +45,13 @@ CONVENTIONS = dict(
     gripper="gripper_width is the continuous opening in metres (0..max_width); "
             "gripper_is_grasped is finger-object contact; binarise/normalise at "
             "convert time using meta.gripper.max_width",
+    delta="delta/relative actions are NOT stored (only absolute q_d / O_T_EE_d "
+          "are); a converter derives them and the rollout env integrates them "
+          "back -- keep BOTH sides on the same reference+frame or train/rollout "
+          "drift. Contract: reference = the MEASURED state at that step (q / "
+          "O_T_EE), base frame: q_target = q + dq, p_target = p + dp, "
+          "R_target = dR . R; a rotation delta is an axis-angle vector. This is "
+          "what rollout.SimEnv's joint_delta / cartesian_delta tags assume.",
 )
 
 

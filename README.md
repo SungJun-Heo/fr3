@@ -62,7 +62,7 @@ shows the tracking error in mm.
 | `gui/` | The unified control GUI. `ControlSession` (UI-agnostic tick loop: joint / task / VR modes, HOME, reset, gripper, overlay, telemetry) + `UnifiedGUI` (the Tkinter panel). |
 | `teleop/` | VR input: Quest → TCP JSON → relative-clutch EE mapping. Server (`vr_server`), the clutch mechanism (`clutch`), and a headless-friendly mock client. The GUI's "vr" mode drives it. |
 | `collection/` | **Raw-data collection** (VLA-format-free): `SimCameraRenderer` (render model cameras), `EpisodeRecorder` (raw IR = `meta.json` + `data.npz` + JPEG frames), `Collector` (record off a session tick), `EpisodePlayer` (exact kinematic replay). Plus domain randomization + episode delete/reindex. |
-| `rollout/` | **VLA-policy consumer**: `SimEnv` (produce observations → consume one raw action → step), `task_success` (per-task ground-truth), `evaluate` (rollout success rate over N episodes). |
+| `rollout/` | **VLA-policy consumer**: `SimEnv` (produce observations → consume one tagged action, absolute/delta × joint/Cartesian → step), `task_success` (per-task ground-truth), `evaluate` (rollout success rate over N episodes). |
 | `overlay/` | Viewer-overlay debug drawing (markers, pose frames). Neutral layer shared by `teleop` and `examples`. |
 | `models/` | `fr3_with_gripper` scene (arm + Franka Hand + table). |
 | `examples/` | Tutorial scripts, one per build step — see [examples/README.md](examples/README.md). |
@@ -112,13 +112,14 @@ home:
 - *Data collection:* format-free IR (`meta.json` + `data.npz` + JPEG) · truthful
   commanded-action recording · per-task domain randomization · exact kinematic
   replay · episode delete/reindex.
-- *VLA consumer:* `rollout.SimEnv` (observe → apply raw action → step) · per-task
-  success detection · `evaluate` rollout harness (success rate).
+- *VLA consumer:* `rollout.SimEnv` (observe → apply one tagged action → step;
+  absolute + delta, joint + Cartesian) · per-task success detection · `evaluate`
+  rollout harness (success rate).
 
-**Next:** EE / delta action space for the consumer · raw-IR transfer to the
-training server · IK quality (null-space toward a reference posture + LPF, per the
-`camel-RBY1` OSMC controller). Per-model **conversion / training / inference** are
-separate projects; fr3 produces the raw IR and hosts the rollout env.
+**Next:** raw-IR transfer to the training server · IK quality (null-space toward a
+reference posture + LPF, per the `camel-RBY1` OSMC controller) · a `tests/` suite.
+Per-model **conversion / training / inference** are separate projects; fr3
+produces the raw IR and hosts the rollout env.
 
 ## Related
 
