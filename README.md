@@ -15,6 +15,12 @@ backend underneath instead of firmware.
 robot*. The collision reflex and the IK singularity / joint-limit trips exist so a
 policy hits those failures here, before hardware.
 
+**Scope.** fr3 does two things: **collect** demonstration data (a VLA-format-free
+intermediate representation) and **consume** a VLA policy (roll it out in the sim
+and score it). Per-model dataset **conversion, training, and inference** live in
+*separate* projects — fr3 stays sim-focused and format-agnostic, so one collected
+dataset can feed GR00T, π0, or anything else.
+
 ## Quick start
 
 ```bash
@@ -55,6 +61,8 @@ shows the tracking error in mm.
 | `scene/` | Task registry + object library + an `mjSpec` builder. One source of truth for "what a task is", shared by the viewer and `SimRobot`. |
 | `gui/` | The unified control GUI. `ControlSession` (UI-agnostic tick loop: joint / task / VR modes, HOME, reset, gripper, overlay, telemetry) + `UnifiedGUI` (the Tkinter panel). |
 | `teleop/` | VR input: Quest → TCP JSON → relative-clutch EE mapping. Server (`vr_server`), the clutch mechanism (`clutch`), and a headless-friendly mock client. The GUI's "vr" mode drives it. |
+| `collection/` | **Raw-data collection** (VLA-format-free): `SimCameraRenderer` (render model cameras), `EpisodeRecorder` (raw IR = `meta.json` + `data.npz` + JPEG frames), `Collector` (record off a session tick), `EpisodePlayer` (exact kinematic replay). Plus domain randomization + episode delete/reindex. |
+| `rollout/` | **VLA-policy consumer**: `SimEnv` (produce observations → consume one raw action → step), `task_success` (per-task ground-truth), `evaluate` (rollout success rate over N episodes). |
 | `overlay/` | Viewer-overlay debug drawing (markers, pose frames). Neutral layer shared by `teleop` and `examples`. |
 | `models/` | `fr3_with_gripper` scene (arm + Franka Hand + table). |
 | `examples/` | Tutorial scripts, one per build step — see [examples/README.md](examples/README.md). |
@@ -97,14 +105,20 @@ home:
 
 ## Status
 
-**Working:** state read · joint-position control · quintic moves · collision
-reflex · DLS IK · goto-pose · streaming Cartesian control · null-space demo ·
-gripper (force-limited grasp vs position-only move) · unified control GUI
-(joint / task / VR teleop in one window).
+**Working:**
+- *Sim/control:* state read · joint-position control · quintic moves · collision
+  reflex · DLS IK · goto-pose · streaming Cartesian control · gripper · unified
+  control GUI (joint / task / VR teleop, keyboard-free VR-button collection).
+- *Data collection:* format-free IR (`meta.json` + `data.npz` + JPEG) · truthful
+  commanded-action recording · per-task domain randomization · exact kinematic
+  replay · episode delete/reindex.
+- *VLA consumer:* `rollout.SimEnv` (observe → apply raw action → step) · per-task
+  success detection · `evaluate` rollout harness (success rate).
 
-**Next:** a VLA runner (observation → policy → `CartesianPose` stream), and IK
-quality work (null-space toward a reference posture + LPF smoothing, per the
-`camel-RBY1` OSMC controller).
+**Next:** EE / delta action space for the consumer · raw-IR transfer to the
+training server · IK quality (null-space toward a reference posture + LPF, per the
+`camel-RBY1` OSMC controller). Per-model **conversion / training / inference** are
+separate projects; fr3 produces the raw IR and hosts the rollout env.
 
 ## Related
 

@@ -24,7 +24,7 @@ from rollout import SimEnv
 
 class ReplayPolicy:
     """Dummy policy: replays a recorded episode's actions, ignoring the obs.
-    Action = ``[q_d(7), gripper_width_d/max_width]`` -- the env's joint format."""
+    Emits the env's tagged joint action ``{"joint": [q_d(7), gripper/max]}``."""
 
     def __init__(self, episode_dir):
         ep = Path(episode_dir)
@@ -41,7 +41,7 @@ class ReplayPolicy:
     def __call__(self, obs):
         a = self.actions[min(self._i, len(self.actions) - 1)]
         self._i += 1
-        return a
+        return {"joint": a}
 
     @property
     def done(self):
@@ -64,9 +64,10 @@ def main():
     # pin the recorded initial scene so this exact scenario reproduces
     env.robot.set_replay_state(policy.q0, policy.obj0, dq=policy.dq0)
     obs = env.observe()
+    p = obs["proprio"]
     print(f"task={task!r}  instruction={env.instruction!r}")
     print(f"obs: images={ {c: v.shape for c, v in obs['images'].items()} } "
-          f"state{obs['state'].shape}={obs['state']}")
+          f"| proprio keys={list(p)} | q={p['q']} gripper_width={float(p['gripper_width']):.3f}")
 
     obj = env.robot.movable_object_names[0]
     while not policy.done:
