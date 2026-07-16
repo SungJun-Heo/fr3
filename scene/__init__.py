@@ -7,7 +7,8 @@ truth for "what a task is" -- shared by the viewer and the sim robot.
 """
 
 from scene.objects import add_object
-from scene.tasks import TASKS, BASES
+from scene.tasks import TASKS, BASES, task_instruction
 from scene.builder import build_task, initial_state
 
-__all__ = ["add_object", "TASKS", "BASES", "build_task", "initial_state"]
+__all__ = ["add_object", "TASKS", "BASES", "task_instruction",
+           "build_task", "initial_state"]

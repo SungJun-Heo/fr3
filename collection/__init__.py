@@ -17,10 +17,10 @@ Primitives:
 from collection.config import CollectionConfig
 from collection.camera import SimCameraRenderer
 from collection.recorder import (EpisodeRecorder, count_episodes,
-                                 list_episodes, delete_episode)
+                                 list_episodes, delete_episode, episode_meta)
 from collection.collector import Collector
 from collection.replay import EpisodePlayer
 
 __all__ = ["CollectionConfig", "SimCameraRenderer", "EpisodeRecorder",
            "Collector", "EpisodePlayer", "count_episodes", "list_episodes",
-           "delete_episode"]
+           "delete_episode", "episode_meta"]

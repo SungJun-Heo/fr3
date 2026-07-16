@@ -34,11 +34,12 @@ import numpy as np
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 from robot import vec_to_pose
-from scene import TASKS
+from scene import TASKS, task_instruction
 from teleop.clutch import SMOOTH_TAU
 from gui.session import ControlSession, TICK_MS
 from collection import (CollectionConfig, Collector, EpisodePlayer,
-                        count_episodes, list_episodes, delete_episode)
+                        count_episodes, list_episodes, delete_episode,
+                        episode_meta)
 
 
 def euler_to_mat(rx, ry, rz):
@@ -256,7 +257,7 @@ class UnifiedGUI:
         self.episode_label.pack(fill=tk.X, pady=(0, 6))
         # Randomize: domain-randomize the movable objects (set up a fresh scene
         # before recording). Its own full-width row above the reset pair.
-        self._btn(self.session_card, "🎲 Randomize objects", self._randomize, VIOLET).pack(
+        self._btn(self.session_card, "Randomize objects", self._randomize, VIOLET).pack(
             fill=tk.X, pady=(0, 4))
         self.reset_frame = tk.Frame(self.session_card, bg=CARD)
         self.reset_frame.pack(fill=tk.X)
@@ -275,13 +276,13 @@ class UnifiedGUI:
         irow.pack(fill=tk.X, pady=(0, 4))
         tk.Label(irow, text="instr", font=FONT_LABEL, bg=CARD, fg=INK).pack(side=tk.LEFT)
         self.instr_entry = self._mk_entry(irow, 16)
-        self.instr_entry.insert(0, "pick up the red cube")
         self.instr_entry.pack(side=tk.LEFT, padx=(6, 0), fill=tk.X, expand=True)
+        self._apply_task_instruction()   # pre-fill with the task's default
         # REC/PAUSE toggle + Save. Idle->REC starts; recording->PAUSE holds the
         # buffer; paused->REC discards this take and records anew; Save writes it.
         brow = tk.Frame(crec, bg=CARD)
         brow.pack(fill=tk.X)
-        self.rec_btn = self._btn(brow, "● REC", self._toggle_record, GREEN)
+        self.rec_btn = self._btn(brow, "REC", self._toggle_record, GREEN)
         self.rec_btn.pack(side=tk.LEFT, expand=True, fill=tk.X, padx=(0, 2))
         self.save_btn = self._btn(brow, "Save", self._save, BLUE)
         self.save_btn.pack(side=tk.LEFT, expand=True, fill=tk.X, padx=(2, 0))
@@ -305,15 +306,16 @@ class UnifiedGUI:
         self.episode_menu.pack(fill=tk.X, pady=(0, 4))
         rbrow = tk.Frame(rsec, bg=CARD)
         rbrow.pack(fill=tk.X)
-        self.replay_btn = self._btn(rbrow, "▶ Replay", self._replay, ACCENT)
+        self.replay_btn = self._btn(rbrow, "Replay", self._replay, ACCENT)
         self.replay_btn.pack(side=tk.LEFT, expand=True, fill=tk.X, padx=(0, 2))
-        self.stop_btn = self._btn(rbrow, "■ Stop", self._stop_replay, ORANGE)
+        self.stop_btn = self._btn(rbrow, "Stop", self._stop_replay, ORANGE)
         self.stop_btn.pack(side=tk.LEFT, expand=True, fill=tk.X, padx=(2, 0))
         self.replay_label = tk.Label(rsec, text="", font=FONT_SMALL, bg=CARD,
-                                     fg=MUTED, anchor="w")
+                                     fg=MUTED, anchor="w", justify=tk.LEFT,
+                                     wraplength=300)
         self.replay_label.pack(fill=tk.X, pady=(4, 0))
         # Delete the selected episode, then reindex the rest to 0..N-1.
-        self.delete_btn = self._btn(rsec, "🗑 Delete episode", self._delete_episode, DANGER)
+        self.delete_btn = self._btn(rsec, "Delete episode", self._delete_episode, DANGER)
         self.delete_btn.pack(fill=tk.X, pady=(4, 0))
 
         # -- status (main column) --
@@ -323,6 +325,8 @@ class UnifiedGUI:
         self.status.pack(fill=tk.X, padx=12, pady=(4, 12))
         self._style_mode_buttons()
         self._sync_collection_ui()
+        # refresh the frame-count readout whenever the episode selection changes
+        self.episode_var.trace_add("write", lambda *_: self._update_replay_ui())
         self._update_replay_ui()
         self._show_frame()
 
@@ -444,6 +448,12 @@ class UnifiedGUI:
     def _instruction(self):
         return self.instr_entry.get().strip() or "unspecified task"
 
+    def _apply_task_instruction(self):
+        """Pre-fill the instruction input with the current task's default
+        instruction (from ``scene.tasks``). Called on startup and task switch."""
+        self.instr_entry.delete(0, tk.END)
+        self.instr_entry.insert(0, task_instruction(self.session.task_name))
+
     def _toggle_record(self):
         """REC/PAUSE toggle. idle->start recording; recording->pause; paused->
         discard this take and start a fresh one (Save keeps it instead)."""
@@ -480,9 +490,9 @@ class UnifiedGUI:
         """Repaint the toggle + Save + status label for the current state."""
         state = self._collect_state()
         if state == "rec":               # recording -> the button pauses
-            self.rec_btn.config(text="❚❚ PAUSE", bg=AMBER, activebackground=_darken(AMBER))
+            self.rec_btn.config(text="PAUSE", bg=AMBER, activebackground=_darken(AMBER))
         else:                            # idle or paused -> the button (re)records
-            self.rec_btn.config(text="● REC", bg=GREEN, activebackground=_darken(GREEN))
+            self.rec_btn.config(text="REC", bg=GREEN, activebackground=_darken(GREEN))
         # rec is only disabled during replay (see _replay); this path is never
         # reached while replaying, so restore it here. Save is enabled ONLY while
         # paused -- you pause the take, then Save it (or REC again to redo).
@@ -576,7 +586,8 @@ class UnifiedGUI:
         return max(1, int((target - time.perf_counter()) * 1000))
 
     def _update_replay_ui(self):
-        """Repaint the replay picker/buttons/progress for the current state."""
+        """Repaint the replay picker/buttons/progress, and show the selected
+        episode's frame count before playback."""
         has_ep = bool(self.episode_var.get())
         self.replay_btn.config(
             state=tk.NORMAL if (has_ep and not self._replaying) else tk.DISABLED)
@@ -584,19 +595,29 @@ class UnifiedGUI:
             state=tk.NORMAL if (has_ep and not self._replaying) else tk.DISABLED)
         self.stop_btn.config(state=tk.NORMAL if self._replaying else tk.DISABLED)
         self.episode_menu.config(state=tk.DISABLED if self._replaying else tk.NORMAL)
-        i, n = self.player.progress
-        self.replay_label.config(
-            text=(f"▶ {self.player.name}  {i}/{n}" if self._replaying else ""),
-            fg=ACCENT if self._replaying else MUTED)
+        if self._replaying:
+            i, n = self.player.progress
+            self.replay_label.config(text=f"{self.player.name}  {i}/{n}", fg=ACCENT)
+        elif has_ep:
+            meta = episode_meta(self.collect_config.root, self.session.task_name,
+                                self.episode_var.get()) or {}
+            lines = []
+            if meta.get("num_frames") is not None:
+                lines.append(f"{meta['num_frames']} frames")
+            if meta.get("language_instruction"):
+                lines.append(f'"{meta["language_instruction"]}"')
+            self.replay_label.config(text="\n".join(lines), fg=MUTED)
+        else:
+            self.replay_label.config(text="", fg=MUTED)
 
     def _refresh_collect_label(self):
         state = self._collect_state()
         if state == "rec":
             self.collect_label.config(
-                text=f"● REC  {self.collector.recorder.num_frames} frames", fg="#e05a5a")
+                text=f"REC  {self.collector.recorder.num_frames} frames", fg="#e05a5a")
         elif state == "paused":
             self.collect_label.config(
-                text=f"❚❚ PAUSED  {self.collector.recorder.num_frames} frames", fg=AMBER)
+                text=f"PAUSED  {self.collector.recorder.num_frames} frames", fg=AMBER)
         elif self._last_saved:
             self.collect_label.config(text=f"saved {self._last_saved}", fg=GREEN)
         else:
@@ -607,6 +628,7 @@ class UnifiedGUI:
     def _on_task(self, name):
         self.session.reload_task(name)
         self._sync_sliders_to_state()
+        self._apply_task_instruction()  # pre-fill this task's default instruction
         self._update_episode_count()   # count is per-task -> refresh for the new one
         self.root.title(f"FR3 sim control [{self.session.task_name}]")
 
@@ -743,7 +765,7 @@ class UnifiedGUI:
                 t, dur = s["moving"]
                 msg += f"\nmoving... {t:.1f}/{dur:.1f}s"
         if s["trip"]:
-            msg += f"\n⚠ SAFETY TRIP: {s['trip']}\n   press Recover or HOME"
+            msg += f"\nSAFETY TRIP: {s['trip']}\n   press Recover or HOME"
         if s["notice"]:
             msg += f"\n{s['notice']}"
         self.status.config(text=msg)

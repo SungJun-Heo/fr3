@@ -51,6 +51,17 @@ def list_episodes(root, task):
     return [f"episode_{n:04d}" for n in sorted(_episode_numbers(Path(root) / task))]
 
 
+def episode_meta(root, task, name):
+    """Parsed ``meta.json`` of a saved episode (cheap -- no ``data.npz`` load),
+    or None if unreadable. Lets a replay picker show an episode's frame count and
+    language instruction before playback."""
+    meta_path = Path(root) / task / name / "meta.json"
+    try:
+        return json.loads(meta_path.read_text())
+    except (OSError, ValueError):
+        return None
+
+
 def delete_episode(root, task, name):
     """Delete episode ``name`` under ``root/task``, then reindex the remaining
     episodes to a contiguous ``0..N-1`` sequence (no gaps). Returns the new
