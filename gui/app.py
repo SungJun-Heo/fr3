@@ -37,9 +37,12 @@ from robot import vec_to_pose
 from scene import TASKS, task_instruction
 from teleop.clutch import SMOOTH_TAU
 from gui.session import ControlSession, TICK_MS
+from gui.plots import TracePlotWindow
 from collection import (CollectionConfig, Collector, EpisodePlayer,
                         count_episodes, list_episodes, delete_episode,
                         episode_meta)
+from scripted import (DatasetGenerator, JointJitter, Shove, SkillRunner,
+                      available as oracle_tasks, make_skill)
 
 
 def euler_to_mat(rx, ry, rz):
@@ -116,6 +119,12 @@ class UnifiedGUI:
         self._prev_reset_btn = False
         self.player = EpisodePlayer(self.session)  # re-simulation episode replay
         self._replaying = False   # GUI replay mode (distinct from player's cursor)
+        self._tab = "joint"       # visible tab; "oracle" runs on top of task mode
+        self._oracle = None       # live SkillRunner while the oracle drives the arm
+        self._oracle_runs = 0     # per-task oracle tally (yield, reset on switch)
+        self._oracle_wins = 0
+        self._gen = None          # live DatasetGenerator while auto-collecting
+        self._plot = None         # per-joint trace window, open during replay
         self._build_ui()
         self._sync_sliders_to_state()
 
@@ -149,11 +158,15 @@ class UnifiedGUI:
         # -- mode + action bar --
         top = tk.Frame(main_col, bg=BG)
         top.pack(fill=tk.X, padx=12, pady=(12, 6))
+        # Tabs, not control modes: JOINT/TASK/VR each map to the session mode of
+        # the same name, but ORACLE is a GUI tab that runs ON TOP of task mode
+        # (the scripted oracle commands EE poses). See ``_select_tab``.
         self.mode_buttons = {}
-        for text, val in (("JOINT", "joint"), ("TASK", "task"), ("VR", "vr")):
+        for text, val in (("JOINT", "joint"), ("TASK", "task"), ("VR", "vr"),
+                          ("ORACLE", "oracle")):
             b = tk.Button(top, text=text, font=FONT_MODE, width=6, pady=10,
                           relief="flat", bd=0, cursor="hand2", highlightthickness=0,
-                          command=lambda v=val: self._select_mode(v))
+                          command=lambda v=val: self._select_tab(v))
             b.pack(side=tk.LEFT, padx=(0, 6))
             self.mode_buttons[val] = b
 
@@ -250,6 +263,68 @@ class UnifiedGUI:
         self.smooth_slider.config(command=lambda v: self.session.set_smooth_tau(float(v)))
         self.smooth_slider.pack(side=tk.LEFT, fill=tk.X, expand=True)
 
+        # -- oracle panel: run the current task's scripted oracle (its own tab,
+        # since it drives the arm itself rather than offering manual targets) --
+        self.oracle_frame = self._panel("Scripted oracle")
+        obar = tk.Frame(self.oracle_frame, bg=CARD)
+        obar.pack(fill=tk.X, padx=10, pady=(0, 6))
+        self.oracle_btn = self._btn(obar, "Run task", self._toggle_oracle, BLUE)
+        self.oracle_btn.pack(side=tk.LEFT, expand=True, fill=tk.X, padx=(0, 4))
+        self.oracle_rr_btn = self._btn(obar, "Randomize + Run",
+                                       self._randomize_and_run, VIOLET)
+        self.oracle_rr_btn.pack(side=tk.LEFT, expand=True, fill=tk.X, padx=(4, 0))
+
+        # -- autonomous collection: the same loop, N times, writing only the
+        # successes. This is what the oracle is FOR; the buttons above are the
+        # single-shot version of it. --
+        cbar = tk.Frame(self.oracle_frame, bg=CARD)
+        cbar.pack(fill=tk.X, padx=10, pady=(0, 6))
+        self.collect_btn = self._btn(cbar, "Collect dataset", self._toggle_collect, GREEN)
+        self.collect_btn.pack(side=tk.LEFT, expand=True, fill=tk.X, padx=(0, 6))
+        tk.Label(cbar, text="attempts", font=FONT_LABEL, bg=CARD,
+                 fg=INK).pack(side=tk.LEFT, padx=(0, 4))
+        self.attempts_entry = self._mk_entry(cbar, 6)
+        self.attempts_entry.insert(0, "50")
+        self.attempts_entry.pack(side=tk.LEFT)
+        self.oracle_status = tk.Label(self.oracle_frame, text="", anchor="w",
+                                      font=FONT_MANIP, bg=CARD, fg=MUTED)
+        self.oracle_status.pack(fill=tk.X, padx=10, pady=(0, 2))
+        # Running tally. One run's verdict says little; the RATE over many is
+        # the number that decides whether the oracle is worth generating a
+        # dataset with (a 60% oracle wastes 40% of the compute). Per task,
+        # since yield differs per task.
+        self.oracle_tally = tk.Label(self.oracle_frame, text="", anchor="w",
+                                     font=FONT_SMALL, bg=CARD, fg=MUTED)
+        self.oracle_tally.pack(fill=tk.X, padx=10, pady=(0, 6))
+
+        # -- disturbance: shove the arm off course mid-run so the (closed-loop)
+        # oracle has to correct. The correction is the point: a policy trained
+        # only on clean trajectories has never seen the state it lands in after
+        # its own first error. Recovery is not a separate feature -- it is what
+        # the oracle does automatically once you knock it off course. --
+        nr = tk.Frame(self.oracle_frame, bg=CARD)
+        nr.pack(fill=tk.X, padx=10, pady=1)
+        self.noise_slider = self._slider(nr, 0.0, 100.0, 5.0,
+                                         "disturbance (mm off course, 0 = off)",
+                                         length=360)
+        self.noise_slider.set(0.0)
+        self.noise_slider.pack(side=tk.LEFT, fill=tk.X, expand=True)
+        jr = tk.Frame(self.oracle_frame, bg=CARD)
+        jr.pack(fill=tk.X, padx=10, pady=1)
+        # A second, independent channel: pushing the flange leaves the elbow
+        # near its nominal posture, so joint jitter reaches configurations a
+        # Cartesian push never visits -- the axis this arm actually fails on.
+        self.jitter_slider = self._slider(jr, 0.0, 5.0, 0.25,
+                                          "joint jitter (deg, 0 = off)", length=360)
+        self.jitter_slider.set(0.0)
+        self.jitter_slider.pack(side=tk.LEFT, fill=tk.X, expand=True)
+        rr = tk.Frame(self.oracle_frame, bg=CARD)
+        rr.pack(fill=tk.X, padx=10, pady=(1, 6))
+        self.noise_rate_slider = self._slider(rr, 0.1, 3.0, 0.1,
+                                              "disturbances per second", length=360)
+        self.noise_rate_slider.set(1.0)
+        self.noise_rate_slider.pack(side=tk.LEFT, fill=tk.X, expand=True)
+
         # -- collected-episode counter (live) + scene reset / randomize --
         self._sep(self.session_card)
         self.episode_label = tk.Label(self.session_card, text="episodes collected: 0",
@@ -259,12 +334,18 @@ class UnifiedGUI:
         # before recording). Its own full-width row above the reset pair.
         self._btn(self.session_card, "Randomize objects", self._randomize, VIOLET).pack(
             fill=tk.X, pady=(0, 4))
+        # The two resets are kept as attributes: the ORACLE tab greys them out,
+        # since a reset there would cut across a run the oracle is driving.
+        # Randomize stays live -- setting up a fresh layout to solve is the
+        # normal thing to do on that tab.
         self.reset_frame = tk.Frame(self.session_card, bg=CARD)
         self.reset_frame.pack(fill=tk.X)
-        self._btn(self.reset_frame, "Reset objects", self.session.reset_objects, GREEN).pack(
-            side=tk.LEFT, expand=True, fill=tk.X, padx=(0, 4))
-        self._btn(self.reset_frame, "Reset ALL", self._reset_all, ORANGE).pack(
-            side=tk.LEFT, expand=True, fill=tk.X, padx=(4, 0))
+        self.reset_obj_btn = self._btn(self.reset_frame, "Reset objects",
+                                       self.session.reset_objects, GREEN)
+        self.reset_obj_btn.pack(side=tk.LEFT, expand=True, fill=tk.X, padx=(0, 4))
+        self.reset_all_btn = self._btn(self.reset_frame, "Reset ALL",
+                                       self._reset_all, ORANGE)
+        self.reset_all_btn.pack(side=tk.LEFT, expand=True, fill=tk.X, padx=(4, 0))
 
         # -- data collection: record episodes to the raw IR (any mode) --
         self._sep(self.session_card)
@@ -328,6 +409,7 @@ class UnifiedGUI:
         # refresh the frame-count readout whenever the episode selection changes
         self.episode_var.trace_add("write", lambda *_: self._update_replay_ui())
         self._update_replay_ui()
+        self._sync_oracle_ui()          # greys out on tasks with no oracle
         self._show_frame()
 
     # -- styled-widget factories ---------------------------------------
@@ -365,38 +447,53 @@ class UnifiedGUI:
         e.bind("<Escape>", lambda ev: self._cancel_edit())
         return e
 
+    # Which session control mode each tab runs on. ORACLE is not a control mode
+    # of its own: the scripted oracle streams EE poses, so it rides task mode.
+    TAB_MODE = {"joint": "joint", "task": "task", "vr": "vr", "oracle": "task"}
+
     def _show_frame(self):
-        """Show the panels for the current mode: joint/task get their slider panel
-        plus the gripper; VR gets the scale + smooth-tau sliders (no gripper)."""
-        for f in (self.joint_frame, self.task_frame, self.gripper_frame, self.vr_frame):
+        """Show the panels for the current TAB: joint/task get their slider panel
+        plus the gripper; VR gets the scale + smooth-tau sliders (no gripper);
+        ORACLE gets the run controls (it drives the arm, so no manual targets)."""
+        for f in (self.joint_frame, self.task_frame, self.gripper_frame,
+                  self.vr_frame, self.oracle_frame):
             f.pack_forget()
-        mode = self.session.mode
-        if mode == "joint":
-            panels = (self.joint_frame, self.gripper_frame)
-        elif mode == "task":
-            panels = (self.task_frame, self.gripper_frame)
-        else:  # vr
-            panels = (self.vr_frame,)
+        panels = {
+            "joint": (self.joint_frame, self.gripper_frame),
+            "task": (self.task_frame, self.gripper_frame),
+            "vr": (self.vr_frame,),
+            "oracle": (self.oracle_frame,),
+        }[self._tab]
         for f in panels:
             f.pack(fill=tk.X, pady=(0, 6))
 
-    # -- buttons / mode ------------------------------------------------
+    # -- buttons / tabs ------------------------------------------------
 
-    def _select_mode(self, mode):
-        self.session.set_mode(mode)
+    def _select_tab(self, tab):
+        """Switch the visible tab, putting the session in the mode it needs."""
+        # Leaving the oracle tab (or changing the control mode under it) pulls
+        # the active-control handle out from under a running oracle.
+        if self._gen is not None and tab != "oracle":
+            self._finish_collect(self._gen.stop(), "stopped (tab changed)")
+        if self._oracle is not None and tab != "oracle":
+            self._stop_oracle("oracle stopped (tab changed)")
+        self._tab = tab
+        self.session.set_mode(self.TAB_MODE[tab])
         self._sync_sliders_to_state()
         self._show_frame()
         self._style_mode_buttons()
-        # Execute + exec(s) only make sense in the manual modes.
-        if mode == "vr":
+        self._sync_oracle_ui()
+        # Execute + exec(s) only make sense in the manual modes -- VR and the
+        # oracle both drive the arm themselves.
+        if tab in ("vr", "oracle"):
             self.exec_group.pack_forget()
         else:
             self.exec_group.pack(side=tk.LEFT, padx=(12, 0))
 
     def _style_mode_buttons(self):
-        """Highlight the active mode button (accent) and mute the others."""
+        """Highlight the active tab button (accent) and mute the others."""
         for val, btn in self.mode_buttons.items():
-            on = (val == self.session.mode)
+            on = (val == self._tab)
             btn.config(bg=ACCENT if on else IDLE, fg="white" if on else INK,
                        activebackground=_darken(ACCENT) if on else _darken(IDLE),
                        activeforeground="white" if on else INK)
@@ -436,12 +533,203 @@ class UnifiedGUI:
         self._sync_sliders_to_state()
 
     def _reset_all(self):
+        if self._oracle is not None:
+            self._stop_oracle("oracle stopped (scene reset)")
         self.session.reset_all()
         self._sync_sliders_to_state()
 
     def _randomize(self):
         """Domain-randomize the movable objects (arm untouched)."""
         self.session.randomize_objects()
+
+    # -- scripted oracle -------------------------------------------------
+
+    def _toggle_oracle(self):
+        """Run task / Stop -- drive the current task's scripted oracle.
+
+        Solves the layout as it stands now, so "Randomize objects" then "Run
+        task" is one demonstration on a fresh scene. With REC armed the frames
+        are recorded like any other take."""
+        if self._oracle is not None:
+            self._stop_oracle("stopped")
+            return
+        if (self._gen is not None or self._replaying
+                or self.session.task_name not in oracle_tasks()):
+            return
+        self.session.recover()          # start from a clean slate, not a trip
+        self.session.set_mode("task")   # the oracle commands EE poses
+        shove, jitter = self._make_disturbances()
+        self._oracle = SkillRunner(self.session, make_skill(self.session.task_name),
+                                   shove=shove, jitter=jitter)
+        self.session.notice = ""
+        self._sync_oracle_ui()
+
+    def _make_disturbances(self):
+        """Build (shove, jitter) from the sliders; either may be None (off).
+
+        The rate slider is per-SECOND because that is what an operator can
+        reason about; both disturbances want a per-tick probability."""
+        per_tick = min(float(self.noise_rate_slider.get()) * (TICK_MS / 1000.0), 1.0)
+        mm = float(self.noise_slider.get())
+        deg = float(self.jitter_slider.get())
+        shove = Shove(displacement=mm / 1000.0, prob=per_tick) if mm > 0 else None
+        jitter = (JointJitter(sigma=np.radians(deg), prob=per_tick)
+                  if deg > 0 else None)
+        return shove, jitter
+
+    def _randomize_and_run(self):
+        """Fresh layout, then solve it -- one demonstration, the way the
+        autonomous collection loop will do it."""
+        if self._oracle is not None:
+            return
+        self._randomize()
+        self._toggle_oracle()
+
+    def _stop_oracle(self, note, verdict=None):
+        """End the run and hand the arm back to the sliders.
+
+        ``verdict`` is True/False when the run reached a success judgement, None
+        when it was cut short (stopped, tab changed) -- only judged runs count
+        toward the tally."""
+        self._oracle = None
+        self.session.notice = note
+        if verdict is not None:
+            self._oracle_runs += 1
+            self._oracle_wins += bool(verdict)
+        # The oracle left the arm wherever it finished; resync so the next tick
+        # does not push stale slider values and yank it back.
+        self._sync_sliders_to_state()
+        self._sync_oracle_ui(note, verdict)
+
+    def _reset_oracle_tally(self):
+        self._oracle_runs = 0
+        self._oracle_wins = 0
+
+    def _sync_oracle_ui(self, status=None, verdict=None):
+        """Button label/colour + status line; greyed out on tasks with no oracle."""
+        collecting = self._gen is not None
+        running = self._oracle is not None or collecting
+        supported = self.session.task_name in oracle_tasks()
+        color = ORANGE if running else (BLUE if supported else IDLE)
+        self.oracle_btn.config(
+            text="Stop" if running else "Run task",
+            bg=color, activebackground=_darken(color),
+            fg="white" if (running or supported) else MUTED,
+            state=tk.NORMAL if (running or supported) else tk.DISABLED)
+        self.oracle_rr_btn.config(
+            state=tk.DISABLED if (running or not supported) else tk.NORMAL)
+        ccolor = ORANGE if collecting else (GREEN if supported else IDLE)
+        self.collect_btn.config(
+            text="Stop collecting" if collecting else "Collect dataset",
+            bg=ccolor, activebackground=_darken(ccolor),
+            fg="white" if (collecting or supported) else MUTED,
+            state=tk.NORMAL if (collecting or supported) else tk.DISABLED)
+        # On the ORACLE tab a reset would cut across a run the oracle is
+        # driving, so grey both resets out there (Randomize stays live).
+        on = self._tab != "oracle"
+        for btn, color in ((self.reset_obj_btn, GREEN),
+                           (self.reset_all_btn, ORANGE)):
+            btn.config(state=tk.NORMAL if on else tk.DISABLED,
+                       bg=color if on else IDLE,
+                       activebackground=_darken(color if on else IDLE),
+                       fg="white" if on else MUTED)
+        if status is None:
+            status = ("" if supported else
+                      f"no oracle for '{self.session.task_name}'")
+        self.oracle_status.config(
+            text=status,
+            fg=GREEN if verdict is True else (DANGER if verdict is False else MUTED))
+        if self._oracle_runs:
+            rate = self._oracle_wins / self._oracle_runs
+            self.oracle_tally.config(
+                text=f"{self.session.task_name}:  {self._oracle_wins}/"
+                     f"{self._oracle_runs} succeeded  ({rate:.0%})")
+        else:
+            self.oracle_tally.config(text="")
+
+    # -- autonomous collection -------------------------------------------
+
+    def _attempts(self):
+        try:
+            return max(1, int(float(self.attempts_entry.get())))
+        except (ValueError, AttributeError):
+            return 50
+
+    def _toggle_collect(self):
+        """Collect dataset / Stop -- run the oracle N times, keeping successes."""
+        if self._gen is not None:
+            self._finish_collect(self._gen.stop(), "stopped")
+            return
+        if self._oracle is not None or self._replaying:
+            return
+        if self.session.task_name not in oracle_tasks():
+            return
+        if self.collector is not None and self.collector.active:
+            # The generator records with its OWN collector; a hand-armed take
+            # running at the same time would double-record every frame.
+            self.oracle_status.config(text="finish or discard the manual take first",
+                                      fg=DANGER)
+            return
+        self.session.recover()
+        self.session.set_mode("task")
+        shove, jitter = self._make_disturbances()
+        self._gen = DatasetGenerator(
+            self.session, self.session.task_name, attempts=self._attempts(),
+            root=self.collect_config.root,
+            instruction=self.instr_entry.get().strip() or None,
+            shove_mm=float(self.noise_slider.get()),
+            jitter_deg=float(self.jitter_slider.get()),
+            rate_hz=float(self.noise_rate_slider.get()))
+        self._sync_oracle_ui("collecting...")
+
+    def _collect_tick(self):
+        """One tick while the generator drives (mirrors the oracle branch)."""
+        summary = self._gen.tick()
+        if summary is None:
+            g = self._gen
+            self.oracle_status.config(
+                text=f"collecting {g.attempt}/{g.attempts}  ({g.phase})", fg=MUTED)
+            self.oracle_tally.config(
+                text=f"{g.task}:  kept {g.kept}/{g.attempt}  ({g.rate:.0%})")
+            return
+        self._finish_collect(summary, "done")
+
+    def _finish_collect(self, summary, how):
+        self._gen.close()
+        self._gen = None
+        self._sync_sliders_to_state()
+        self._update_episode_count()
+        self._refresh_episode_list()
+        drops = summary["attempts"] - summary["kept"]
+        note = (f"collection {how}: kept {summary['kept']}/{summary['attempts']}"
+                f"  ({summary['yield']:.0%}), {drops} discarded"
+                f"  [{summary['elapsed_s']:.0f}s]")
+        self.session.notice = note
+        self._sync_oracle_ui(note, verdict=summary["kept"] > 0)
+        if summary["failures"]:
+            worst = max(summary["failures"].items(), key=lambda kv: kv[1])
+            self.oracle_tally.config(
+                text=f"{summary['task']}:  kept {summary['kept']}/"
+                     f"{summary['attempts']}   most common drop: {worst[0]} x{worst[1]}")
+
+    def _oracle_tick(self):
+        """One tick while the oracle drives. Mirrors the replay branch: the
+        runner steps the session itself, so the normal control path is skipped."""
+        result = self._oracle.tick()
+        if self.collector is not None:
+            self.collector.on_tick(self.session)   # REC records an oracle take
+            self._refresh_collect_label()
+        if result is None:
+            n = self._oracle.disturbance_count
+            tail = f", {n} disturbances" if n else ""
+            self.oracle_status.config(
+                text=f"{self._oracle.phase}   ({self._oracle.ticks} ticks{tail})")
+            return
+        outcome = "SUCCESS" if result.success else f"FAILED -- {result.reason}"
+        tail = (f", {result.shoves} disturbances recovered"
+                if result.shoves else "")
+        self._stop_oracle(f"{outcome}  ({result.ticks} ticks{tail})",
+                          verdict=result.success)
 
     # -- data collection -----------------------------------------------
 
@@ -528,6 +816,8 @@ class UnifiedGUI:
         until it finishes or Stop is pressed)."""
         if self._replaying:
             return
+        if self._oracle is not None:
+            return                      # can't replay while the oracle drives
         if self.collector is not None and self.collector.active:
             return                      # can't replay while recording
         name = self.episode_var.get()
@@ -537,6 +827,7 @@ class UnifiedGUI:
         if not self.player.load(ep_dir):
             return
         self.player.start()             # reconstructs the recorded initial scene
+        self._open_plot()
         self._replaying = True
         self._replay_t0 = time.perf_counter()   # wall anchor for tempo pacing
         if self.session.viewer is not None:
@@ -553,10 +844,73 @@ class UnifiedGUI:
             return
         self._replaying = False
         self.player.stop()
+        self._close_plot()
         self.session.recover()          # resync control targets -> no jump
         self._sync_sliders_to_state()
         self._sync_collection_ui()      # restore rec/save button states
         self._update_replay_ui()
+
+    def _open_plot(self):
+        """Show the loaded episode's state-vs-action traces, joint and task space.
+
+        Reads them off the player, which already loaded the npz to replay it.
+        The pose decomposition lives here rather than in the plot widget: the
+        ``O_T_EE`` column-major convention is this layer's business, and the
+        widget stays a generic polyline canvas."""
+        t = self.player.traces
+        if t["q"] is None:
+            return
+        views = {"joint": self._joint_view(t), "task": self._task_view(t)}
+        if self._plot is None or not self._plot.alive:
+            self._plot = TracePlotWindow(self.root,
+                                         on_close=lambda: setattr(self, "_plot", None))
+        self._plot.show(views, frames=len(t["q"]), title=self.player.name)
+
+    @staticmethod
+    def _joint_view(t):
+        """Per-joint measured q vs commanded q_d, in degrees, plus the gripper."""
+        q, q_d = t["q"], t["q_d"]
+        tracks = [(f"joint{j + 1}", np.degrees(q[:, j]),
+                   None if q_d is None else np.degrees(q_d[:, j]), "deg")
+                  for j in range(q.shape[1])]
+        if t["gripper_width"] is not None:
+            tracks.append(("gripper", t["gripper_width"] * 1000.0,
+                           None if t["gripper_width_d"] is None
+                           else t["gripper_width_d"] * 1000.0, "mm"))
+        return tracks
+
+    @staticmethod
+    def _task_view(t):
+        """EE pose measured vs commanded: x/y/z in cm, roll/pitch/yaw in deg."""
+        ee, ee_d = t["O_T_EE"], t["O_T_EE_d"]
+        if ee is None:
+            return []
+
+        def decompose(poses):
+            if poses is None:
+                return None, None
+            pos, rpy = [], []
+            for row in poses:
+                p, R = vec_to_pose(row)
+                pos.append(p * 100.0)                      # m -> cm
+                rpy.append(np.degrees(mat_to_euler(R)))
+            return np.array(pos), np.unwrap(np.array(rpy), period=360.0, axis=0)
+
+        p_m, r_m = decompose(ee)
+        p_c, r_c = decompose(ee_d)
+        tracks = []
+        for i, name in enumerate("xyz"):
+            tracks.append((name, p_m[:, i],
+                           None if p_c is None else p_c[:, i], "cm"))
+        for i, name in enumerate(("roll", "pitch", "yaw")):
+            tracks.append((name, r_m[:, i],
+                           None if r_c is None else r_c[:, i], "deg"))
+        return tracks
+
+    def _close_plot(self):
+        if self._plot is not None and self._plot.alive:
+            self._plot.close()
+        self._plot = None
 
     def _delete_episode(self):
         """Delete the selected episode (with confirmation) and reindex the rest
@@ -626,10 +980,16 @@ class UnifiedGUI:
     # -- runtime settings ----------------------------------------------
 
     def _on_task(self, name):
+        if self._gen is not None:
+            self._finish_collect(self._gen.stop(), "stopped (task changed)")
+        if self._oracle is not None:
+            self._stop_oracle("oracle stopped (task changed)")
+        self._reset_oracle_tally()      # yield is per task
         self.session.reload_task(name)
         self._sync_sliders_to_state()
         self._apply_task_instruction()  # pre-fill this task's default instruction
         self._update_episode_count()   # count is per-task -> refresh for the new one
+        self._sync_oracle_ui()         # the new task may have no oracle
         self.root.title(f"FR3 sim control [{self.session.task_name}]")
 
     # -- per-tick sync -------------------------------------------------
@@ -691,6 +1051,8 @@ class UnifiedGUI:
             if self.player.step():
                 if self.session.viewer is not None:
                     self.session.viewer.sync()
+                if self._plot is not None and self._plot.alive:
+                    self._plot.set_frame(self.player.progress[0] - 1)
                 self._update_replay_ui()
                 delay = self._replay_delay_ms()
             else:
@@ -698,6 +1060,19 @@ class UnifiedGUI:
                 delay = TICK_MS
             self._update_status()
             self.root.after(delay, self._tick)
+            return
+
+        # The scripted oracle owns the arm while it runs: it streams its own
+        # targets and steps the session, so the manual control path below (and
+        # the sliders feeding it) must be skipped, exactly like replay above.
+        if self._gen is not None or self._oracle is not None:
+            if self.session.viewer is not None and not self.session.viewer.is_running():
+                self.root.destroy()
+                return
+            self._collect_tick() if self._gen is not None else self._oracle_tick()
+            self._update_status()
+            self._refresh_entries()
+            self.root.after(TICK_MS, self._tick)
             return
 
         # VR face buttons (rising edge) drive the GUI's session actions hands-free
@@ -716,8 +1091,11 @@ class UnifiedGUI:
         self._prev_save_btn = vr.save
         self._prev_reset_btn = vr.reset
 
+        # Keyed on the TAB, not the session mode: the oracle tab also runs in
+        # task mode, but its (hidden) sliders must not drive the arm -- between
+        # runs it should simply hold where the oracle left it.
         moving = self.session.move_traj is not None
-        if self.session.mode in ("joint", "task"):
+        if self._tab in ("joint", "task"):
             self.session.set_gripper_frac(self.gripper_slider.get())
             if not moving and not self._editing:
                 self._push_targets()

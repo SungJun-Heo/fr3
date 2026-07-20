@@ -43,6 +43,8 @@ class EpisodePlayer:
         self._gw = None           # (T,) measured gripper width
         # re-sim fallback inputs
         self._q_d = None
+        self._ee = None
+        self._ee_d = None
         self._gw_cmd = None
         self._q0 = None
         self._dq0 = None
@@ -68,6 +70,8 @@ class EpisodePlayer:
         self._obj = d["object_qpos"] if "object_qpos" in d.files else None
         # re-sim fallback inputs (older episodes without a per-frame object track)
         self._q_d = d["q_d"] if "q_d" in d.files else self._q
+        self._ee = d["O_T_EE"] if "O_T_EE" in d.files else None
+        self._ee_d = d["O_T_EE_d"] if "O_T_EE_d" in d.files else None
         self._gw_cmd = d["gripper_width_d"] if "gripper_width_d" in d.files else self._gw
         self._q0 = self._q[0]
         self._dq0 = d["dq"][0] if "dq" in d.files else np.zeros(self._q.shape[1])
@@ -145,6 +149,17 @@ class EpisodePlayer:
     def progress(self):
         """``(current_frame, total_frames)`` for a UI readout."""
         return (self._i, self._n)
+
+    @property
+    def traces(self):
+        """Measured state vs commanded action for the loaded episode.
+
+        For plotting the two against each other -- the loader already holds
+        them, so a viewer does not need to re-open the npz. Any entry may be
+        None on an older episode that did not record it."""
+        return dict(q=self._q, q_d=self._q_d,
+                    gripper_width=self._gw, gripper_width_d=self._gw_cmd,
+                    O_T_EE=self._ee, O_T_EE_d=self._ee_d)
 
     @property
     def rec_elapsed(self):
