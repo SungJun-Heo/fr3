@@ -16,6 +16,7 @@ import sys
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
+from collection import CollectionConfig
 from scripted import available, generate
 
 
@@ -37,6 +38,17 @@ def main():
     p.add_argument("--view", action="store_true", help="watch it (much slower)")
     p.add_argument("--keep-failures", action="store_true",
                    help="also write failed episodes, flagged success=false")
+    # -- storage budget: images are ~99% of an episode on disk, so these four
+    # are the dataset's size. Policies train at ~224-256 px, so 640x480 mostly
+    # stores pixels that get resized away; --every is the one-way door (50 Hz
+    # can be subsampled later, 10 Hz cannot be un-thrown-away).
+    p.add_argument("--width", type=int, default=640, help="image width")
+    p.add_argument("--height", type=int, default=480, help="image height")
+    p.add_argument("--quality", type=int, default=95, help="JPEG quality 1-95")
+    p.add_argument("--cameras", default="front,wrist",
+                   help="comma-separated camera names")
+    p.add_argument("--every", type=int, default=1,
+                   help="keep every Nth control tick (1 = all, 50 Hz)")
     p.add_argument("-q", "--quiet", action="store_true", help="no per-episode lines")
     args = p.parse_args()
 
@@ -44,11 +56,20 @@ def main():
         p.error("pass --task TASK or --all")
     tasks = available() if args.all else [args.task]
 
+    cfg = CollectionConfig(
+        root=args.root, cameras=tuple(c.strip() for c in args.cameras.split(",") if c.strip()),
+        width=args.width, height=args.height, jpeg_quality=args.quality,
+        record_every=args.every)
+    hz = 50.0 / cfg.record_every
+    print(f"storage: {cfg.width}x{cfg.height} q{cfg.jpeg_quality} "
+          f"x{len(cfg.cameras)} cam @ {hz:.0f} Hz "
+          f"-> ~{cfg.bytes_per_frame() / 1e6:.2f} MB per recorded frame")
+
     summaries = []
     for task in tasks:
         print(f"\n=== {task}: {args.attempts} attempts ===")
         summaries.append(generate(
-            task, attempts=args.attempts, root=args.root,
+            task, attempts=args.attempts, config=cfg,
             instruction=args.instruction, shove_mm=args.shove,
             jitter_deg=args.jitter, rate_hz=args.rate, seed=args.seed,
             view=args.view, keep_failures=args.keep_failures,

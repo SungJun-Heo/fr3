@@ -106,3 +106,34 @@ class TestRecorderRoundTrip(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestStorageBudget(unittest.TestCase):
+    """The four knobs that decide what a dataset costs on disk.
+
+    Images are ~99% of an episode (a 322-frame pick is 30 MB of JPEG against
+    180 kB of numbers), so these are the storage budget, and a bad value here
+    is only discovered after generating in bulk."""
+
+    def test_record_every_is_at_least_one(self):
+        """0 or a negative would divide the record rate into nonsense."""
+        self.assertEqual(CollectionConfig(record_every=0).record_every, 1)
+        self.assertEqual(CollectionConfig(record_every=-3).record_every, 1)
+        self.assertEqual(CollectionConfig(record_every=2.9).record_every, 2)
+
+    def test_defaults_unchanged(self):
+        """The defaults are what every existing episode was recorded at;
+        changing them silently would make old and new data incomparable."""
+        c = CollectionConfig()
+        self.assertEqual((c.width, c.height, c.jpeg_quality, c.record_every),
+                         (640, 480, 95, 1))
+        self.assertEqual(c.cameras, ("front", "wrist"))
+
+    def test_size_estimate_scales_with_pixels_and_cameras(self):
+        big = CollectionConfig(width=640, height=480)
+        small = CollectionConfig(width=256, height=256)
+        # places=3, not more: the estimate rounds to whole bytes.
+        self.assertAlmostEqual(big.bytes_per_frame() / small.bytes_per_frame(),
+                               (640 * 480) / (256 * 256), places=3)
+        one = CollectionConfig(cameras=("front",))
+        self.assertAlmostEqual(big.bytes_per_frame() / one.bytes_per_frame(), 2.0)

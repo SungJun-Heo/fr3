@@ -79,7 +79,7 @@ class DatasetGenerator:
     The session is BORROWED: the caller opened it and the caller closes it.
     ``close`` releases the generator's own recorder/renderer."""
 
-    def __init__(self, session, task, attempts=50, root="data/raw",
+    def __init__(self, session, task, attempts=50, root="data/raw", config=None,
                  instruction=None, randomize=True, shove_mm=0.0, jitter_deg=0.0,
                  rate_hz=1.0, seed=0, keep_failures=False, on_episode=None):
         session.reload_task(task)
@@ -93,9 +93,13 @@ class DatasetGenerator:
         self.rate_hz = float(rate_hz)
         self.keep_failures = keep_failures
         self.on_episode = on_episode
-        self.root = str(root)
+        # ``config`` carries the storage budget (resolution, quality, cameras,
+        # record_every), which dominates dataset size; ``root`` alone is the
+        # convenience form.
+        self.config = config if config is not None else CollectionConfig(root=root)
+        self.root = str(self.config.root)
 
-        self.collector = Collector(session, CollectionConfig(root=root))
+        self.collector = Collector(session, self.config)
         self.text = instruction if instruction is not None else task_instruction(task)
         self._rng = np.random.default_rng(seed)
         self._per_tick = min(self.rate_hz * CONTROL_DT, 1.0)
@@ -205,7 +209,7 @@ class DatasetGenerator:
         return self.summary
 
 
-def generate(task, attempts=50, root="data/raw", instruction=None,
+def generate(task, attempts=50, root="data/raw", config=None, instruction=None,
              randomize=True, shove_mm=0.0, jitter_deg=0.0, rate_hz=1.0,
              seed=0, view=False, keep_failures=False, session=None,
              on_episode=None, progress=True):
@@ -215,6 +219,10 @@ def generate(task, attempts=50, root="data/raw", instruction=None,
     ``rate_hz`` is how often either fires. ``keep_failures`` writes the failures
     too, flagged ``success=False`` -- off by default, and only useful if you
     intend to train something that needs negatives.
+
+    ``config`` is a ``CollectionConfig`` -- pass one to control resolution,
+    JPEG quality, cameras and ``record_every``, which together decide how much
+    disk the run costs. ``root`` alone is shorthand for the defaults.
 
     ``session`` lets a caller lend its own live session instead of opening a
     second viewer; a lent session is not closed on the way out."""
@@ -235,7 +243,8 @@ def generate(task, attempts=50, root="data/raw", instruction=None,
             on_episode(i, result)
 
     gen = DatasetGenerator(
-        session, task, attempts=attempts, root=root, instruction=instruction,
+        session, task, attempts=attempts, root=root, config=config,
+        instruction=instruction,
         randomize=randomize, shove_mm=shove_mm, jitter_deg=jitter_deg,
         rate_hz=rate_hz, seed=seed, keep_failures=keep_failures,
         on_episode=report)

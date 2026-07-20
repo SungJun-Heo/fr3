@@ -42,6 +42,7 @@ class Collector:
         # Paused = an episode buffer exists but on_tick stops appending (so the
         # operator can review it, then Save it or redo it).
         self._paused = False
+        self._since = 0          # ticks seen this episode, for record_every
 
     @property
     def active(self):
@@ -68,6 +69,7 @@ class Collector:
         self.recorder.start(self.session.task_name, instruction, self._specs,
                             rm, self._session_params(), object_qpos0, source)
         self._paused = False
+        self._since = 0          # tick counter for record_every
 
     def pause(self):
         """Stop appending frames but keep the episode buffer. No-op if idle."""
@@ -108,6 +110,15 @@ class Collector:
         if not self.recording:      # idle or paused -> do not append a frame
             return
 
+        # Decimation drops the WHOLE frame, never just its images: the IR's
+        # invariant is one JPEG per npz row per camera, and a row without a
+        # picture (or the reverse) breaks every reader. The recorded fps is
+        # adjusted to match, so meta.json still describes the data truthfully.
+        keep = (self._since % self.config.record_every) == 0
+        self._since += 1
+        if not keep:
+            return
+
         state = session.robot.read_once()
         gripper_state = session.gripper.read_once()
         gripper_width_d = session.gripper.target_width()
@@ -131,10 +142,10 @@ class Collector:
 
     def _session_params(self):
         """Truthful record timing derived from the session: sim-time advanced
-        per recorded tick is ``substeps * timestep`` (one frame per tick)."""
+        between RECORDED frames is ``substeps * timestep * record_every``."""
         dt = self.session.model.opt.timestep
         substeps = self.session.substeps
-        control_dt = substeps * dt
+        control_dt = substeps * dt * self.config.record_every
         return dict(fps=1.0 / control_dt, control_dt=control_dt,
                     sim_timestep=dt, substeps=substeps)
 

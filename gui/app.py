@@ -347,6 +347,29 @@ class UnifiedGUI:
                                        self._reset_all, ORANGE)
         self.reset_all_btn.pack(side=tk.LEFT, expand=True, fill=tk.X, padx=(4, 0))
 
+        # -- storage budget: images are ~99% of an episode on disk, so these
+        # decide what a dataset costs. Applied to every recording path (manual
+        # REC and the oracle's Collect dataset alike). --
+        self._sep(self.session_card)
+        tk.Label(self.session_card, text="image storage", font=FONT_BOLD, bg=CARD,
+                 fg=MUTED, anchor="w").pack(fill=tk.X, pady=(0, 4))
+        srow = tk.Frame(self.session_card, bg=CARD)
+        srow.pack(fill=tk.X)
+        self.store_entries = {}
+        for key, label, width, default in (("width", "w", 5, 640),
+                                           ("height", "h", 5, 480),
+                                           ("jpeg_quality", "q", 4, 95),
+                                           ("record_every", "every", 4, 1)):
+            tk.Label(srow, text=label, font=FONT_SMALL, bg=CARD,
+                     fg=INK).pack(side=tk.LEFT, padx=(0, 2))
+            e = self._mk_entry(srow, width)
+            e.insert(0, str(default))
+            e.pack(side=tk.LEFT, padx=(0, 8))
+            self.store_entries[key] = e
+        self.store_label = tk.Label(self.session_card, text="", anchor="w",
+                                    font=FONT_SMALL, bg=CARD, fg=MUTED)
+        self.store_label.pack(fill=tk.X, pady=(2, 0))
+
         # -- data collection: record episodes to the raw IR (any mode) --
         self._sep(self.session_card)
         crec = tk.Frame(self.session_card, bg=CARD)
@@ -410,6 +433,7 @@ class UnifiedGUI:
         self.episode_var.trace_add("write", lambda *_: self._update_replay_ui())
         self._update_replay_ui()
         self._sync_oracle_ui()          # greys out on tasks with no oracle
+        self._refresh_store_label()
         self._show_frame()
 
     # -- styled-widget factories ---------------------------------------
@@ -675,7 +699,7 @@ class UnifiedGUI:
         shove, jitter = self._make_disturbances()
         self._gen = DatasetGenerator(
             self.session, self.session.task_name, attempts=self._attempts(),
-            root=self.collect_config.root,
+            config=self._apply_store_config(),
             instruction=self.instr_entry.get().strip() or None,
             shove_mm=float(self.noise_slider.get()),
             jitter_deg=float(self.jitter_slider.get()),
@@ -733,6 +757,37 @@ class UnifiedGUI:
 
     # -- data collection -----------------------------------------------
 
+    def _apply_store_config(self):
+        """Read the storage entries into ``collect_config``.
+
+        Read at point of use rather than on edit: there is then no way for the
+        entries and the config to drift apart. A live Collector holds a renderer
+        sized to the old resolution, so drop it (when idle) to be rebuilt."""
+        cfg = self.collect_config
+        before = (cfg.width, cfg.height, cfg.jpeg_quality, cfg.record_every)
+        for key, entry in self.store_entries.items():
+            try:
+                setattr(cfg, key, max(1, int(float(entry.get()))))
+            except (ValueError, AttributeError):
+                entry.delete(0, tk.END)
+                entry.insert(0, str(getattr(cfg, key)))
+        cfg.jpeg_quality = min(cfg.jpeg_quality, 95)
+        cfg.__post_init__()
+        if (cfg.width, cfg.height, cfg.jpeg_quality, cfg.record_every) != before:
+            if self.collector is not None and not self.collector.active:
+                self.collector.close()
+                self.collector = None       # rebuilt at the new resolution
+        self._refresh_store_label()
+        return cfg
+
+    def _refresh_store_label(self):
+        cfg = self.collect_config
+        hz = (1000.0 / TICK_MS) / cfg.record_every
+        mb = cfg.bytes_per_frame() / 1e6
+        self.store_label.config(
+            text=f"{len(cfg.cameras)} cam @ {hz:.0f} Hz  ~{mb * hz * 6:.0f} MB "
+                 f"per 6 s episode")
+
     def _instruction(self):
         return self.instr_entry.get().strip() or "unspecified task"
 
@@ -747,6 +802,7 @@ class UnifiedGUI:
         discard this take and start a fresh one (Save keeps it instead)."""
         if self._replaying:
             return                      # not while a replay is running
+        self._apply_store_config()
         if self.collector is None:
             self.collector = Collector(self.session, self.collect_config)
         c = self.collector
