@@ -28,7 +28,7 @@ import mujoco
 # 1.2: added per-frame object_qpos (full object trajectory) so replay is EXACT --
 #      it kinematically re-displays the recorded ground truth (no re-simulation
 #      drift). meta.object_qpos0 kept as the initial-layout summary.
-SCHEMA_VERSION = "1.2"
+SCHEMA_VERSION = "1.3"
 
 # How to read the raw arrays. Copied verbatim into every ``meta.json`` so a
 # reader (or converter) needs no external doc.
@@ -124,7 +124,7 @@ def robot_meta(robot, gripper):
 
 
 def build_meta(task, instruction, num_frames, success, keep, session_params,
-               camera_specs, robot_meta_dict, object_qpos0):
+               camera_specs, robot_meta_dict, object_qpos0, source=None):
     """Assemble the ``meta.json`` header (everything but ``field_index``, which
     the recorder fills from the finished ``data.npz``). ``object_qpos0`` is the
     movable objects' initial poses ``(n_obj, 7)`` -- the scene layout replay
@@ -151,6 +151,7 @@ def build_meta(task, instruction, num_frames, success, keep, session_params,
         object_qpos0=np.asarray(object_qpos0, np.float64).tolist(),
         conventions=CONVENTIONS,
         provenance=provenance(),
+        source=source,
     )
 
 

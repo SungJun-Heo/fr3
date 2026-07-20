@@ -59,14 +59,14 @@ class Collector:
 
     # -- episode control -----------------------------------------------
 
-    def start_episode(self, instruction):
+    def start_episode(self, instruction, source=None):
         """Begin recording. ``instruction`` is the language annotation both
         GR00T and pi0 consume as the task/prompt. Captures the movable objects'
         initial layout now (``object_qpos0``) so replay can reconstruct the scene."""
         rm = schema.robot_meta(self.session.robot, self.session.gripper)
         object_qpos0 = self.session.robot.object_qpos()
         self.recorder.start(self.session.task_name, instruction, self._specs,
-                            rm, self._session_params(), object_qpos0)
+                            rm, self._session_params(), object_qpos0, source)
         self._paused = False
 
     def pause(self):

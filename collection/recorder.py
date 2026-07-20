@@ -92,6 +92,7 @@ class EpisodeRecorder:
         self._instruction = None
         self._camera_specs = None
         self._robot_meta = None
+        self._source = None
         self._session_params = None
         self._object_qpos0 = None
         self._tmp_dir = None
@@ -108,7 +109,7 @@ class EpisodeRecorder:
     # -- lifecycle -----------------------------------------------------
 
     def start(self, task, instruction, camera_specs, robot_meta, session_params,
-              object_qpos0):
+              object_qpos0, source=None):
         """Begin an episode: allocate the staging dir and per-camera image dirs.
 
         ``camera_specs`` / ``robot_meta`` / ``session_params`` / ``object_qpos0``
@@ -125,6 +126,7 @@ class EpisodeRecorder:
         self._robot_meta = robot_meta
         self._session_params = session_params
         self._object_qpos0 = object_qpos0
+        self._source = source
 
         task_dir = self.config.root / task
         task_dir.mkdir(parents=True, exist_ok=True)
@@ -173,6 +175,7 @@ class EpisodeRecorder:
             num_frames=len(self._frames), success=success,
             keep=True, session_params=self._session_params,
             camera_specs=self._camera_specs, robot_meta_dict=self._robot_meta,
+            source=self._source,
             object_qpos0=self._object_qpos0)
         meta["field_index"] = schema.field_index(arrays)
         with open(self._tmp_dir / "meta.json", "w") as f:

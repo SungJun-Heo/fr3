@@ -59,9 +59,13 @@ TASKS = {
     "bin_picking": dict(base="fr3_with_gripper",
                         instruction="put the green peg in the bin", objects=[
         dict(kind="bin", name="bin", pos=[0.6, 0.15, 0.0]),
+        # x starts at 0.43, not 0.40: nearer than that the arm's manipulability
+        # at the peg's grasp height falls to ~0.019-0.023, under the 0.02
+        # singularity floor, so those layouts are unsolvable rather than merely
+        # hard. The range is shifted (not narrowed) to keep the spread.
         dict(kind="cylinder", name="peg", pos=[0.45, -0.1, 0.04],
              size=[0.015, 0.04], rgba=GREEN,
-             rand=dict(x=(0.40, 0.55), y=(-0.18, 0.05), yaw=(-math.pi, math.pi))),
+             rand=dict(x=(0.43, 0.57), y=(-0.18, 0.05), yaw=(-math.pi, math.pi))),
     ]),
 }
 
