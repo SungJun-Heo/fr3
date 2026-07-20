@@ -39,16 +39,17 @@ def main():
     p.add_argument("--keep-failures", action="store_true",
                    help="also write failed episodes, flagged success=false")
     # -- storage budget: images are ~99% of an episode on disk, so these four
-    # are the dataset's size. Policies train at ~224-256 px, so 640x480 mostly
-    # stores pixels that get resized away; --every is the one-way door (50 Hz
-    # can be subsampled later, 10 Hz cannot be un-thrown-away).
-    p.add_argument("--width", type=int, default=640, help="image width")
-    p.add_argument("--height", type=int, default=480, help="image height")
-    p.add_argument("--quality", type=int, default=95, help="JPEG quality 1-95")
-    p.add_argument("--cameras", default="front,wrist",
+    # are the dataset's size. Defaults come from CollectionConfig so the CLI and
+    # the recorder cannot disagree about what "default" means.
+    d = CollectionConfig()
+    p.add_argument("--width", type=int, default=d.width, help="image width")
+    p.add_argument("--height", type=int, default=d.height, help="image height")
+    p.add_argument("--quality", type=int, default=d.jpeg_quality,
+                   help="JPEG quality 1-95")
+    p.add_argument("--cameras", default=",".join(d.cameras),
                    help="comma-separated camera names")
-    p.add_argument("--every", type=int, default=1,
-                   help="keep every Nth control tick (1 = all, 50 Hz)")
+    p.add_argument("--every", type=int, default=d.record_every,
+                   help="keep every Nth control tick (1 = all, full rate)")
     p.add_argument("-q", "--quiet", action="store_true", help="no per-episode lines")
     args = p.parse_args()
 

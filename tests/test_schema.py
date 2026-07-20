@@ -104,9 +104,6 @@ class TestRecorderRoundTrip(unittest.TestCase):
             self.assertEqual(names, {"episode_0000", "episode_0001"})  # 0002 -> 0001
 
 
-if __name__ == "__main__":
-    unittest.main()
-
 
 class TestStorageBudget(unittest.TestCase):
     """The four knobs that decide what a dataset costs on disk.
@@ -121,13 +118,18 @@ class TestStorageBudget(unittest.TestCase):
         self.assertEqual(CollectionConfig(record_every=-3).record_every, 1)
         self.assertEqual(CollectionConfig(record_every=2.9).record_every, 2)
 
-    def test_defaults_unchanged(self):
-        """The defaults are what every existing episode was recorded at;
-        changing them silently would make old and new data incomparable."""
+    def test_defaults_are_the_shipped_storage_budget(self):
+        """Pinned deliberately: changing these silently makes new episodes
+        incomparable with every one already recorded, and the mismatch only
+        surfaces at conversion time."""
         c = CollectionConfig()
-        self.assertEqual((c.width, c.height, c.jpeg_quality, c.record_every),
-                         (640, 480, 95, 1))
+        self.assertEqual((c.width, c.height, c.jpeg_quality), (256, 256, 85))
         self.assertEqual(c.cameras, ("front", "wrist"))
+
+    def test_record_every_defaults_to_the_full_rate(self):
+        """The one-way door: a rate thrown away at record time cannot be
+        recovered, so the default pays for it."""
+        self.assertEqual(CollectionConfig().record_every, 1)
 
     def test_size_estimate_scales_with_pixels_and_cameras(self):
         big = CollectionConfig(width=640, height=480)
@@ -135,5 +137,10 @@ class TestStorageBudget(unittest.TestCase):
         # places=3, not more: the estimate rounds to whole bytes.
         self.assertAlmostEqual(big.bytes_per_frame() / small.bytes_per_frame(),
                                (640 * 480) / (256 * 256), places=3)
-        one = CollectionConfig(cameras=("front",))
+        # hold resolution equal so only the camera count varies
+        one = CollectionConfig(width=640, height=480, cameras=("front",))
         self.assertAlmostEqual(big.bytes_per_frame() / one.bytes_per_frame(), 2.0)
+
+
+if __name__ == "__main__":
+    unittest.main()

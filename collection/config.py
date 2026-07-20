@@ -36,17 +36,23 @@ class CollectionConfig:
     every reader. The effective rate is recomputed from it and written to
     ``meta.json``, so ``fps`` still cannot disagree with the data.
 
-    Note the asymmetry when choosing: resolution and quality can be lowered
-    almost freely (policies train at ~224-256 px, so storing 640x480 is mostly
-    storing pixels that get resized away), but the record rate is a one-way
-    door. Recording at 50 Hz and subsampling later keeps the choice open;
-    recording at 10 Hz throws the intermediate motion away for good.
+    The defaults are 256x256 q85 at the full control rate. Resolution and
+    quality are cheap to give up -- policies train at ~224-256 px, so 640x480
+    was mostly storing pixels that get resized away again (measured: 28.0 ->
+    6.3 MB per episode, 1000 episodes 28 GB -> 6 GB). ``record_every`` stays 1
+    because it is the one-way door: 50 Hz can be subsampled later, 10 Hz cannot
+    be un-thrown-away, so paying for it up front is the safe default.
+
+    Every episode records the size it was rendered at (``cameras[*].width`` in
+    meta.json), so a set mixing old 640x480 episodes with new 256x256 ones is at
+    least self-describing -- but a converter has to handle it, so prefer
+    regenerating over mixing.
     """
     root: Path = Path("data/raw")
     cameras: tuple = ("front", "wrist")
-    width: int = 640
-    height: int = 480
-    jpeg_quality: int = 95
+    width: int = 256
+    height: int = 256
+    jpeg_quality: int = 85
     record_every: int = 1
 
     def __post_init__(self):
