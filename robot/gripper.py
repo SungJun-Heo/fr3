@@ -49,6 +49,8 @@ class Gripper:
         self._default_force = float(self.model.actuator_forcerange[self._act, 1])
         self._fj1 = self.model.joint("finger_joint1").qposadr[0]
         self._fj2 = self.model.joint("finger_joint2").qposadr[0]
+        self._fv1 = self.model.joint("finger_joint1").dofadr[0]
+        self._fv2 = self.model.joint("finger_joint2").dofadr[0]
         finger = {self.model.body("left_finger").id, self.model.body("right_finger").id}
         self._finger_bodies = finger
         self._own_bodies = finger | {self.model.body("hand").id}
@@ -110,6 +112,21 @@ class Gripper:
         half = 0.5 * float(width)
         self.data.qpos[self._fj1] = half
         self.data.qpos[self._fj2] = half
+
+    def reset_open(self):
+        """Snap the fingers *instantly* fully open and hold them there -- the
+        gripper's half of a synchronous episode reset (``SimRobot.reset_home``
+        does the arm, this the hand). Places qpos AND points the actuator at
+        max_width, so the post-reset state is already open with no opening
+        transient: collection's first recorded frame and a rollout's reset
+        observation then agree (a policy never sees a start state that its
+        training set lacks). Sim-only (no real-robot analog), like
+        ``reset_home`` -- the real gripper opens via the blocking ``homing()``."""
+        self.set_kinematic_width(self.max_width)
+        self.data.qvel[self._fv1] = 0.0
+        self.data.qvel[self._fv2] = 0.0
+        self.set_target_width(self.max_width)
+        mujoco.mj_forward(self.model, self.data)
 
     def _set_force_limit(self, force):
         """Cap the gripper actuator's output force (N). This is what separates a

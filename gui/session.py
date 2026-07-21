@@ -240,6 +240,7 @@ class ControlSession:
         self.move_traj = None
         self.robot.reset_objects()
         self.robot.reset_home()
+        self.gripper.reset_open()   # before the sync: gripper_target reads width()
         self.trip = None
         self._blocked = False
         self._sync_targets_to_state()

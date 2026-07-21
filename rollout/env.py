@@ -99,6 +99,7 @@ class SimEnv:
         """Reset arm to HOME and objects to their start (or a random layout).
         Returns the first observation."""
         self.robot.reset_home()
+        self.gripper.reset_open()   # same start state the recorder's reset gives
         if randomize:
             self.robot.randomize_objects()
         else:
